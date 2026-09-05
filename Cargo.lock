@@ -143,7 +143,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e8b505d6aadb778c9c4b0ae174966641f11d578d253b7786f2407b17d5045ec"
 dependencies = [
  "aes-gcm",
- "base64",
+ "base64 0.23.1",
  "bincode-next",
  "chacha20poly1305",
  "crc32fast",
@@ -193,6 +193,12 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
@@ -2015,6 +2021,7 @@ name = "ricardo-cli"
 version = "0.1.0"
 dependencies = [
  "asupersync",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "fsqlite",

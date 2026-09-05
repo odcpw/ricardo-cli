@@ -2,9 +2,11 @@
 mod bridge;
 mod cli;
 mod history;
+mod media;
 mod model;
 mod output;
 mod pacing;
+mod tutti;
 use chrono::Utc;
 use clap::{CommandFactory, Parser};
 use cli::{BridgeCommand, Command, ExtensionCommand, FavoritesCommand};
@@ -73,10 +75,91 @@ fn upstream(e: String) -> Error {
 }
 fn call(dir: &Path, req: Value, timeout: u64) -> Result<Value> {
     bridge::request(dir,req,Duration::from_secs(timeout)).map_err(|e| {
-        if e.contains("rate_limit_cooldown") || e.contains("request_busy") {
+        if e.contains("Unsupported browser operation") {
+            Error{exit:7,code:"extension_outdated",message:e,hint:"Reload the Ricardo CLI unpacked extension (0.2.0+) in Chrome, then click Connect bridge.".into(),retryable:false}
+        } else if e.contains("rate_limit_cooldown") || e.contains("request_busy") {
             Error{exit:5,code:if e.contains("rate_limit_cooldown"){"rate_limit_cooldown"}else{"request_busy"},message:e,hint:"Wait for the cooldown or current command to finish. Do not run parallel commands or automatic retries.".into(),retryable:false}
         }else{Error::new(3,"bridge_unavailable",e,"Open the Ricardo CLI extension and Connect; run ricardo doctor --json.")}
     })
+}
+fn check_response(r: &Value, site: &str) -> Result<()> {
+    let status = r["status"]
+        .as_u64()
+        .ok_or_else(|| upstream("Browser response missing HTTP status".into()))?;
+    if matches!(status, 403 | 429) {
+        return Err(Error {
+            exit: 5,
+            code: "upstream_blocked",
+            message: format!("{site} returned HTTP {status}"),
+            hint:
+                "The bridge pauses all marketplace requests for two minutes. No automatic retries."
+                    .into(),
+            retryable: false,
+        });
+    }
+    if status == 401 {
+        return Err(Error::new(
+            4,
+            "authentication_required",
+            format!("{site} requires sign-in"),
+            "Sign in on the corresponding site in the connected Chrome profile",
+        ));
+    }
+    if status == 404 {
+        return Err(Error::new(
+            6,
+            "not_found",
+            format!("{site} resource no longer exists"),
+            "Check the current listing URL",
+        ));
+    }
+    if !(200..300).contains(&status) {
+        return Err(upstream(format!("{site} returned HTTP {status}")));
+    }
+    Ok(())
+}
+fn tutti_fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String)> {
+    let r = call(dir, json!({"op":"fetch_tutti","path":path}), timeout)?;
+    check_response(&r, "Tutti")?;
+    if r["url"] != format!("https://www.tutti.ch{path}") {
+        return Err(upstream("Tutti response URL changed".into()));
+    }
+    if !r["content_type"]
+        .as_str()
+        .unwrap_or("")
+        .contains("text/html")
+    {
+        return Err(upstream("Tutti response is not HTML".into()));
+    }
+    let body = r["body"]
+        .as_str()
+        .filter(|s| s.len() <= 4 * 1024 * 1024)
+        .ok_or_else(|| upstream("Tutti response missing or too large".into()))?;
+    let checked = r["checked_at"]
+        .as_str()
+        .ok_or_else(|| upstream("Tutti observation timestamp missing".into()))?;
+    Ok((body.into(), checked.into()))
+}
+fn tutti_inspect(dir: &Path, input: &str, timeout: u64) -> Result<Value> {
+    let u = tutti::listing_url(input)?;
+    let (html, checked) = tutti_fetch(dir, u.path(), timeout)?;
+    let data = tutti::parse_detail(&html, input, &checked)?;
+    history::record(
+        dir,
+        "inspect",
+        &format!("tutti:{}", data["id"].as_str().unwrap()),
+        &data,
+    )
+    .map_err(io_error)?;
+    Ok(data)
+}
+fn listing_images(dir: &Path, args: &cli::ImageArgs, timeout: u64) -> Result<Value> {
+    let data = if args.article.starts_with("https://www.tutti.ch/") {
+        tutti_inspect(dir, &args.article, timeout)?
+    } else {
+        json!(inspect(dir, &args.article, timeout)?)
+    };
+    media::download(dir, args, data, timeout)
 }
 fn fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String, String)> {
     validate_read_path(path)?;
@@ -312,16 +395,40 @@ fn run(c: &cli::Cli, dir: &Path) -> Result<Value> {
         Command::Extension {
             command: ExtensionCommand::Install { extension_id },
         } => bridge::install_native_host(dir, extension_id).map_err(io_error),
+        Command::Images(args) => listing_images(dir, args, c.timeout),
+        Command::Tutti { command } => match command {
+            cli::TuttiCommand::Inspect { url } => tutti_inspect(dir, url, c.timeout),
+            cli::TuttiCommand::Images(args) => {
+                tutti::listing_url(&args.article)?;
+                listing_images(dir, args, c.timeout)
+            }
+            cli::TuttiCommand::Search { query, limit } => {
+                let query = query.join(" ");
+                let path = tutti::search_path(&query)?;
+                let (html, checked) = tutti_fetch(dir, &path, c.timeout)?;
+                let (total, urls) = tutti::search_candidates(&html, &query)?;
+                let mut listings = Vec::new();
+                for url in urls.iter().take(*limit as usize) {
+                    listings.push(tutti_inspect(dir, url, c.timeout)?);
+                }
+                Ok(
+                    json!({"marketplace":"tutti","source":"live_browser","query":query,"checked_at":checked,"url":format!("https://www.tutti.ch{path}"),"total":total,"page":1,"partial":(listings.len() as u64)<total,"listings":listings,"scope":"First search page only, newest first; each returned listing independently inspected. Listed is not seller-confirmed availability."}),
+                )
+            }
+        },
         Command::Account => account(dir, c.timeout),
         Command::Doctor => {
             let b = call(dir, json!({"op":"status"}), c.timeout)?;
             let a = account(dir, c.timeout)?;
             history::list(dir, None, 1).map_err(io_error)?;
             Ok(
-                json!({"healthy":true,"bridge":b,"account":a,"state_directory":dir,"next_commands":["ricardo search Bambu P2S --json","ricardo inspect 1327242570 --json"],"storage":"FrankenSQLite 0.3.16","runtime":"Asupersync 0.4.10"}),
+                json!({"healthy":true,"bridge":b,"account":a,"state_directory":dir,"next_commands":["ricardo search Bambu P2S --json","ricardo inspect ARTICLE_ID --json"],"storage":"FrankenSQLite 0.3.16","runtime":"Asupersync 0.4.10"}),
             )
         }
         Command::Inspect { article } => {
+            if article.starts_with("https://www.tutti.ch/") {
+                return tutti_inspect(dir, article, c.timeout);
+            }
             let l = inspect(dir, article, c.timeout)?;
             let data = json!(l);
             history::record(dir, "inspect", &l.id, &data).map_err(io_error)?;

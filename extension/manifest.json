@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Ricardo CLI Browser Bridge",
-  "version": "0.1.0",
-  "description": "Read Ricardo through your existing browser session without exporting cookies.",
+  "version": "0.2.0",
+  "description": "Read Ricardo and Tutti listings and photos through your browser without exporting cookies.",
   "permissions": [
     "nativeMessaging",
     "scripting"
   ],
   "host_permissions": [
-    "https://www.ricardo.ch/*"
+    "https://www.ricardo.ch/*",
+    "https://www.tutti.ch/*",
+    "https://img.ricardostatic.ch/*",
+    "https://c.tutti.ch/*"
   ],
   "background": {
     "service_worker": "background.js",

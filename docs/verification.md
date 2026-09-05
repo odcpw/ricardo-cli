@@ -71,3 +71,30 @@ was built with `cargo rustc --release --locked -j 2 -- -C lto=off`; capability
 output confirms the two-minute configuration. No live Ricardo requests were
 sent while implementing or testing this change. Reconnect the extension bridge
 to start the updated native process.
+
+## 2026-09-05: Tutti and gallery downloads
+
+Added Tutti first-page search and exact-URL listing inspection, plus paced
+Ricardo/Tutti gallery downloads to private numbered files and a JSON manifest.
+The observed Tutti search token for `Prusa Core` and the exact detail/query data
+shapes were checked against current public pages. Fixtures retain only public
+parser inputs, with synthetic descriptions and locations; no account/session
+state or downloaded photos is committed.
+
+Validation: 38 Rust unit tests and 7 process-contract tests passed (45 total),
+10 Node extension tests passed, and Clippy passed with warnings denied.
+Coverage includes exact-listing scoping, unknown availability, CDN/path
+restrictions, credential-free image fetching, blocked/oversized responses,
+image signatures, file permissions, manifest output and an actionable error
+when the old extension receives a new operation. The image transport test uses
+synthetic bytes; it is not a live authenticated-browser claim.
+
+Release built with the existing cached dependencies and root LTO disabled for
+this local iteration. The browser's currently loaded 0.1.0 extension must be
+reloaded to activate 0.2.0 permissions and code. New native live Tutti/image
+commands await that reload; previous Ricardo live reads were working.
+
+Installed the release binary at `/home/oliver/.local/bin/ricardo`. A live
+`ricardo tutti inspect` call returned the expected `extension_outdated` error
+(exit 7, non-retryable) from the still-running older extension, with the reload
+instruction. No Tutti request was sent by that old handler.

@@ -165,3 +165,23 @@ The default search limit is five candidates. There are no automatic retries.
 HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
 A connection failure also delays subsequent requests. These limits govern this
 CLI, not manual browsing or other programs, and cannot guarantee site acceptance.
+
+### Tutti and photos
+
+The same browser bridge now supports Tutti first-page search, listing inspection,
+and local gallery downloads for both marketplaces:
+
+```bash
+ricardo tutti search Prusa Core --limit 3 --json
+ricardo tutti inspect TUTTI_LISTING_URL --json
+ricardo images RICARDO_ID_OR_LISTING_URL --json
+ricardo images RICARDO_ID_OR_LISTING_URL --index 3 --json
+ricardo tutti images TUTTI_LISTING_URL --json
+```
+
+Open the returned `images[].path` files to inspect hours, accessories and condition.
+Each run creates numbered files and a manifest in its own private directory.
+Photos are fetched sequentially through the shared eight-second pacing gate.
+Reload the unpacked extension after updating and reconnect it. Version 0.2.0
+adds only Tutti and the Ricardo/Tutti image CDNs to the host permissions.
+See [the agent contract](docs/agent-contract.md) for limits and freshness semantics.

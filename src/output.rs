@@ -55,6 +55,29 @@ fn clean(value: &Value) -> String {
 fn search_table(data: &Value) -> Option<String> {
     use std::fmt::Write as _;
     let listings = data.get("listings")?.as_array()?;
+    if data["marketplace"] == "tutti" {
+        let mut text = format!(
+            "{} Tutti result(s) · {} · checked {}\nID          STATUS     ASK CHF  TITLE\n",
+            listings.len(),
+            clean(&data["query"]),
+            clean(&data["checked_at"])
+        );
+        for l in listings {
+            let _ = writeln!(
+                text,
+                "{}  {}  {} CHF  {}\n  {}",
+                clean(&l["id"]),
+                clean(&l["status"]),
+                l["asking_price"],
+                clean(&l["title"]),
+                clean(&l["url"])
+            );
+        }
+        text.push_str(
+            "First search page only. Asking prices; availability needs seller confirmation.\n",
+        );
+        return Some(text);
+    }
     let mut text = format!(
         "{} result(s) · {} · checked {}\n",
         listings.len(),
@@ -91,9 +114,14 @@ pub fn capabilities() -> Value {
         "name": "ricardo", "version": env!("CARGO_PKG_VERSION"),
         "schema_version": SCHEMA_VERSION,
         "transport": "logged-in browser extension and local native messaging bridge",
+        "marketplaces":["ricardo","tutti"], "minimum_extension_version":"0.2.0",
         "commands": [
             {"command":"search", "access":"read", "example":"ricardo search Bambu P2S --max-price 350 --json"},
             {"command":"inspect", "access":"read", "example":"ricardo inspect ARTICLE_ID --json"},
+            {"command":"images", "access":"read-and-local-write", "example":"ricardo images ARTICLE_ID --index 3 --json", "limit_default":20,"limit_max":50,"max_image_bytes":4194304},
+            {"command":"tutti search", "access":"read", "example":"ricardo tutti search Prusa Core --limit 3 --json", "scope":"first page; detail verification per returned listing"},
+            {"command":"tutti inspect", "access":"read", "example":"ricardo tutti inspect TUTTI_LISTING_URL --json"},
+            {"command":"tutti images", "access":"read-and-local-write", "example":"ricardo tutti images TUTTI_LISTING_URL --json"},
             {"command":"account", "access":"read"},
             {"command":"favorites list", "access":"read", "pagination":{"offset_default":0,"limit_default":50,"limit_max":50}},
             {"command":"favorites add", "access":"write", "confirmation":"--yes; otherwise preview"},
@@ -116,6 +144,8 @@ pub fn capabilities() -> Value {
         "environment": {"NO_COLOR":"Output has no ANSI styling by default", "XDG_DATA_HOME":"Default local state root when configured"},
         "request_pacing":{"concurrency":1,"gap_after_completion_seconds":8,"http_429_cooldown_seconds":120,"automatic_retries":false},
         "limitations": [
+            "Tutti supports first-page search and full-URL inspection/images only; listed is not seller-confirmed availability. No Tutti account or mutation commands.",
+            "Photos are downloaded only on request, sequentially; no OCR or visual claims are inferred by the CLI.",
             "No bids, purchases, seller messages, listing publication, or payment operations are exposed.",
             "Ricardo interface changes can make an operation unsupported; errors do not fall back to stale success.",
             "History is a record of earlier observations, not proof of current availability.",

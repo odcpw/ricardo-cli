@@ -148,3 +148,80 @@ fn shared_broker_refuses_parallel_requests_and_stops_after_rate_limit() {
     assert_eq!(third["error"]["code"], "rate_limit_cooldown");
     assert_eq!(third["error"]["retryable"], false);
 }
+
+#[test]
+fn tutti_images_produce_local_bytes_and_manifest_without_private_data() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(dir.path().join("bridge.sock")).unwrap();
+    let url = "https://www.tutti.ch/de/vi/zuerich/garten-handwerk/werkzeuge-maschinen/bambu-lab-p2s/82644754";
+    let worker = thread::spawn(move || {
+        for expected in ["fetch_tutti", "image"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], expected);
+            let result = if expected == "fetch_tutti" {
+                json!({"status":200,"url":url,"content_type":"text/html","body":include_str!("fixtures/tutti-p2s.html"),"checked_at":"2026-09-05T18:00:00Z"})
+            } else {
+                assert_eq!(request["url"], "https://c.tutti.ch/big/5804655919.jpg");
+                json!({"status":200,"url":request["url"],"content_type":"image/jpeg","base64":"/9j/","checked_at":"2026-09-05T18:00:10Z"})
+            };
+            writeln!(stream, "{}", json!({"result":result})).unwrap();
+        }
+    });
+    let output = run(
+        &["tutti", "images", url, "--index", "1", "--json"],
+        dir.path(),
+    );
+    worker.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let data = &value["data"];
+    let path = std::path::Path::new(data["images"][0]["path"].as_str().unwrap());
+    assert!(path.is_absolute());
+    assert_eq!(std::fs::read(path).unwrap(), vec![255, 216, 255]);
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(path.parent().unwrap().join("manifest.json").is_file());
+    assert_eq!(data["partial"], false);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn older_extension_produces_reload_instruction() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(dir.path().join("bridge.sock")).unwrap();
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        writeln!(stream,"{}",json!({"error":{"code":"browser_error","message":"Unsupported browser operation; only fetch, resolve and favorite are enabled"}})).unwrap();
+    });
+    let output = run(
+        &[
+            "tutti",
+            "inspect",
+            "https://www.tutti.ch/de/vi/a/b/printer/123",
+            "--json",
+        ],
+        dir.path(),
+    );
+    worker.join().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+    let v: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(v["error"]["code"], "extension_outdated");
+    assert!(v["error"]["hint"].as_str().unwrap().contains("Reload"));
+    assert_eq!(v["error"]["retryable"], false);
+}

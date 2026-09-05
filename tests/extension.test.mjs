@@ -98,3 +98,37 @@ test('favorite keeps credentials in page fetch and makes no retry on failure', a
     assert.equal(calls,1);
   } finally {globalThis.fetch=savedFetch;globalThis.location=savedLocation;}
 });
+
+const {validateTuttiPath,validateImageUrl}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+test('Tutti paths and image CDNs are exact allowlists',()=>{
+  assert.equal(validateTuttiPath('/de/vi/zuerich/garden/tools/printer/123').hostname,'www.tutti.ch');
+  assert.equal(validateTuttiPath('/de/q/suche/Ak6pQcnVzYSBDb3JlwJTAwMDA').hostname,'www.tutti.ch');
+  for (const path of ['/de/messages','//evil.test/de/vi/a/b/123','/de/vi/a/%2e%2e/b/123','/de/vi/a/b/123?x=1','/de/q/suche/abc']) assert.throws(()=>validateTuttiPath(path));
+  for (const url of ['https://evil.test/a.jpg','https://c.tutti.ch/big/123.svg','https://c.tutti.ch/big/123.jpg?x=1','https://me@c.tutti.ch/big/123.jpg']) assert.throws(()=>validateImageUrl(url));
+  assert.equal(validateImageUrl('https://c.tutti.ch/big/123.jpg').hostname,'c.tutti.ch');
+});
+test('Tutti uses its own existing tab and never accepts a caller method',async()=>{
+  let script;
+  const chrome={tabs:{query:async arg=>{assert.deepEqual(arg,{url:'https://www.tutti.ch/*'});return [{id:7}]}},scripting:{executeScript:async arg=>{script=arg;return [{result:{status:200}}]}}};
+  await handleRequest({op:'fetch_tutti',path:'/de/vi/a/b/printer/123'},chrome);
+  assert.equal(script.target.tabId,7);assert.deepEqual(script.args,['https://www.tutti.ch/de/vi/a/b/printer/123','GET',null]);
+  await assert.rejects(handleRequest({op:'fetch_tutti',path:'/de/vi/a/b/123',method:'POST'},chrome),/unsupported fields/);
+});
+test('image fetch omits credentials, rejects redirects and stops on HTTP 429',async()=>{
+  const saved=globalThis.fetch;let calls=0;const url='https://c.tutti.ch/big/123.jpg';
+  try {
+    globalThis.fetch=async (u,options)=>{calls++;assert.equal(u,url);assert.equal(options.credentials,'omit');assert.equal(options.redirect,'error');return {ok:true,status:200,url,headers:new Headers({'content-type':'image/jpeg'}),body:new Blob([new Uint8Array([255,216,255])]).stream()}};
+    const r=await handleRequest({op:'image',url});assert.equal(r.base64,'/9j/');assert.equal(calls,1);
+    globalThis.fetch=async()=>{calls++;return {ok:false,status:429,url,headers:new Headers(),body:null}};
+    const blocked=await handleRequest({op:'image',url});assert.equal(blocked.status,429);assert.equal(blocked.base64,undefined);assert.equal(calls,2);
+  } finally {globalThis.fetch=saved;}
+});
+test('image stream is cancelled at the byte cap and HTML is rejected',async()=>{
+  const saved=globalThis.fetch;let cancelled=false;const url='https://c.tutti.ch/big/123.jpg';
+  try {
+    globalThis.fetch=async()=>({ok:true,status:200,url,headers:new Headers({'content-type':'image/jpeg'}),body:{getReader:()=>({read:async()=>({done:false,value:new Uint8Array(4*1024*1024+1)}),cancel:async()=>{cancelled=true}})}});
+    await assert.rejects(handleRequest({op:'image',url}),/4 MiB/);assert.equal(cancelled,true);
+    globalThis.fetch=async()=>({ok:true,status:200,url,headers:new Headers({'content-type':'text/html'}),body:null});
+    await assert.rejects(handleRequest({op:'image',url}),/content type/);
+  } finally {globalThis.fetch=saved;}
+});

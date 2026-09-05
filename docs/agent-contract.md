@@ -76,7 +76,7 @@ variable across otherwise identical requests.
 
 Read account information with `account`, `favorites list`, `buying`, `selling`,
 or `notifications`. `page URL` provides a read-only snapshot of a Ricardo page.
-Access is restricted to Ricardo; this is not a general browser control API.
+The `page` command is restricted to Ricardo; dedicated Tutti commands use the additional allowlisted site. This is not a general browser control API.
 Account commands largely expose upstream data inside the versioned envelope.
 Favorites and buying accept `--offset` (default 0) and `--limit` (default and
 maximum 50 for favorites, 30 for buying). Use their `pagination.next_offset`
@@ -124,3 +124,50 @@ The default search limit is five candidates. There are no automatic retries.
 HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
 A connection failure also delays subsequent requests. These limits govern this
 CLI, not manual browsing or other programs, and cannot guarantee site acceptance.
+
+## Tutti and listing photos (extension 0.2.0+)
+
+After updating, reload the unpacked extension and connect the bridge again.
+The extension needs host access to www.tutti.ch, img.ricardostatic.ch and
+c.tutti.ch, in addition to www.ricardo.ch. Keep a Tutti tab open for its reads.
+Login stays in Chrome. Public image requests omit credentials entirely.
+
+```bash
+ricardo tutti search Prusa Core --limit 3 --json
+ricardo tutti inspect TUTTI_LISTING_URL --json
+ricardo images RICARDO_ARTICLE_ID --json
+ricardo images RICARDO_ARTICLE_ID --index 3 --json
+ricardo tutti images TUTTI_LISTING_URL --output-dir /tmp/printer-photos --json
+```
+
+`inspect` and `images` also recognize a full Tutti listing URL. Tutti IDs alone
+are unsupported: use the canonical German `/de/vi/.../ID` URL with no query
+parameters. Search currently inspects the first result page, newest first,
+with a default limit of five and maximum twenty. Each returned listing is
+individually fetched; the first failed inspection fails the command. `partial`
+and `total` disclose incomplete coverage. Pagination, advanced filters and
+Tutti account/mutation operations are not implemented.
+
+Tutti `asking_price` is an asking price, not a bid or guaranteed checkout price.
+`status: listed` means the exact listing page declares InStock in its structured
+data. It is not seller-confirmed availability. Missing availability is unknown;
+missing/mismatched listing data is an error. Seller descriptions are claims.
+History keys are namespaced `tutti:ID` to avoid marketplace ID collisions.
+
+`images` first inspects the listing, then downloads its own gallery sequentially.
+Related-listing photos are excluded. By default it downloads up to twenty photos;
+`--limit` accepts 1–50, or `--index N` fetches one one-based gallery position.
+Each invocation creates a new private directory with numbered JPEG/PNG/WebP
+files and a JSON manifest. JSON output provides absolute `images[].path`, source
+URL, index, byte count and observation time, along with `total_images` and
+`partial`. Open these paths with the agent's image-viewing tool to inspect them.
+The CLI does not perform OCR or infer condition/hours from photographs.
+
+Only observed Ricardo/Tutti image CDN paths are accepted. Redirects are rejected,
+responses are capped at 4 MiB, and file signatures must match the image type.
+Existing files are not overwritten. If a later download fails, earlier files may
+remain in the new directory, but the command reports failure rather than complete
+success. Photos are local artifacts: do not commit them or publish them.
+
+All new requests share the bridge's eight-second gap, single-request concurrency
+and two-minute 403/429 cooldown. There are no automatic retries.

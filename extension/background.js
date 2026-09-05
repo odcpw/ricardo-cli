@@ -10,7 +10,43 @@ export function validatePath(path) {
   if (!allowed) throw new Error("Route is not an approved read endpoint");
   return url;
 }
+export function validateTuttiPath(path) {
+  if (typeof path !== "string" || /[\\\x00-\x20]|%2f|%5c|%2e/i.test(path) || !path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid Tutti path");
+  const url = new URL(path, "https://www.tutti.ch");
+  if (url.origin !== "https://www.tutti.ch" || url.search || url.hash || !(/^\/de\/vi\/(?:[^/]+\/){2,6}\d+$/.test(url.pathname) || /^\/de\/q\/suche\/A[A-Za-z0-9_-]+$/.test(url.pathname))) throw new Error("Unsupported Tutti read route");
+  return url;
+}
+export function validateImageUrl(input) {
+  if (typeof input !== "string" || /[\\\x00-\x20]|%2f|%5c|%2e/i.test(input)) throw new Error("Invalid image URL");
+  const url = new URL(input);
+  if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) throw new Error("Invalid image URL");
+  const allowed = (url.hostname === "img.ricardostatic.ch" && /^\/images\/[a-f0-9-]{36}\/t_\d+x\d+\/[^/]+$/.test(url.pathname))
+    || (url.hostname === "c.tutti.ch" && /^\/(big|thumbnail)\/\d+\.(jpg|jpeg|png|webp)$/.test(url.pathname));
+  if (!allowed) throw new Error("Only observed Ricardo/Tutti image CDN paths are supported");
+  return url;
+}
 export async function handleRequest(request, chromeApi = globalThis.chrome) {
+  if (request?.op === "image") {
+    if (Object.keys(request).some(k => !["op", "url"].includes(k))) throw new Error("Image request has unsupported fields");
+    const url = validateImageUrl(request.url);
+    // Public CDN images need no login cookies. Host permissions allow this
+    // bounded service-worker fetch without injecting anything into the page.
+    const response = await fetch(url.href, {credentials:"omit", redirect:"error", cache:"no-store", signal:AbortSignal.timeout(30000)});
+    const content_type = (response.headers.get("content-type") || "").split(";")[0];
+    const result = {status:response.status, url:response.url, content_type, checked_at:new Date().toISOString()};
+    if (!response.ok) { await response.body?.cancel(); return result; }
+    if (!["image/jpeg", "image/png", "image/webp"].includes(content_type)) { await response.body?.cancel(); throw new Error("Unsupported image content type"); }
+    const reader = response.body?.getReader(); const chunks = []; let size = 0;
+    if (reader) while (true) {
+      const part = await reader.read(); if (part.done) break;
+      size += part.value.length;
+      if (size > 4 * 1024 * 1024) { await reader.cancel(); throw new Error("Image exceeds 4 MiB limit"); }
+      chunks.push(part.value);
+    }
+    let binary = "";
+    for (const chunk of chunks) for (let i = 0; i < chunk.length; i += 8192) binary += String.fromCharCode(...chunk.subarray(i, i + 8192));
+    return {...result, base64:btoa(binary)};
+  }
   if (request?.op === "resolve") {
     if (typeof request.article !== "string" || !/^\d{1,20}$/.test(request.article)) throw new Error("Article must be a numeric Ricardo ID");
     const tabs = await chromeApi.tabs.query({url: "https://www.ricardo.ch/*"});
@@ -48,17 +84,20 @@ export async function handleRequest(request, chromeApi = globalThis.chrome) {
     const path = "/marketplace-spa/api/saved-articles" + (request.action === "remove" ? `/${request.article}` : "");
     url = new URL(path, "https://www.ricardo.ch");
     if (request.action === "add") body = JSON.stringify({articleId: request.article});
+  } else if (request?.op === "fetch_tutti") {
+    if (Object.keys(request).some(k => !["op", "path"].includes(k))) throw new Error("Tutti request has unsupported fields");
+    url = validateTuttiPath(request.path);
   } else {
     if (!request || request.op !== "fetch") throw new Error("Unsupported browser operation; only fetch, resolve and favorite are enabled");
     url = validatePath(request.path);
   }
-  const tabs = await chromeApi.tabs.query({ url: "https://www.ricardo.ch/*" });
+  const tabs = await chromeApi.tabs.query({ url: `${url.origin}/*` });
   const tab = tabs.find(t => t.active) || tabs[0];
-  if (!tab?.id) throw new Error("Open Ricardo in this Chrome profile and sign in, then retry");
+  if (!tab?.id) throw new Error(`Open ${url.hostname === "www.tutti.ch" ? "Tutti" : "Ricardo"} in this Chrome profile, then retry`);
   const results = await chromeApi.scripting.executeScript({
     target: { tabId: tab.id }, world: "MAIN", args: [url.href, method, body],
     func: async (url, method, body) => {
-      if (location.origin !== "https://www.ricardo.ch") throw new Error("Ricardo tab changed origin");
+      if (location.origin !== new URL(url).origin) throw new Error("Marketplace tab changed origin");
       const options = { method, credentials: "include", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) };
       if (body !== null) { options.body = body; options.headers = {"Content-Type": "application/json"}; }
       // One attempt only: a failed response does not prove a mutation was rejected.

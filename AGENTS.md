@@ -19,7 +19,7 @@ Read `docs/agent-contract.md` before changing command semantics. Read
   Interface drift must produce an actionable error, not invented data.
 - Authentication belongs in the browser. Do not store, log, or commit passwords,
   browser profiles, cookies, tokens, account dumps, or private observations.
-- Restrict browser requests to approved Ricardo origins. Read snapshots do not
+- Restrict browser requests to approved Ricardo/Tutti origins and their explicitly allowlisted image CDNs. Read snapshots do not
   authorize arbitrary scripts, unrelated navigation, or external messages.
 - Mutations must name their action and target, preview by default, and require
   explicit execution. Never claim a mutation succeeded without a verified

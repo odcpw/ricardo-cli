@@ -78,3 +78,20 @@ The default search limit is five candidates. There are no automatic retries.
 HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
 A connection failure also delays subsequent requests. These limits govern this
 CLI, not manual browsing or other programs, and cannot guarantee site acceptance.
+
+## Tutti and photographs
+
+Use `ricardo tutti search QUERY --limit 3 --json`, `ricardo tutti inspect URL
+--json`, and `ricardo tutti images URL --json`. Only full canonical German Tutti
+listing URLs are accepted. Search covers the first page only; check `partial`.
+Tutti `listed` means site-declared availability, not seller confirmation.
+
+For either marketplace, `ricardo images ID_OR_URL --json` downloads the gallery
+and returns local `images[].path` files. `--index 3` downloads only the third
+photo; `--limit 5` bounds a gallery batch. Use your image viewer on those paths:
+listing text can omit hours that are visible in photographs. Quote displayed
+counters as photographic evidence at the time the seller took the picture,
+not a live reading from the machine. Do not infer wear or warranty from an image.
+
+Requires extension 0.2.0 or newer with Tutti and both image-CDN permissions.
+The existing paced bridge governs photos too; do not parallelize commands.

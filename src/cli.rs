@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "ricardo",
     version,
-    about = "Live Ricardo interface access through your signed-in browser",
+    about = "Live Ricardo and Tutti listings and photos through your browser",
     arg_required_else_help = true
 )]
 #[command(
@@ -32,8 +32,15 @@ pub struct Cli {
 pub enum Command {
     /// Search the current Ricardo interface, with fresh observation timestamps.
     Search(SearchArgs),
-    /// Inspect one article by its numeric ID or Ricardo URL.
+    /// Inspect a Ricardo ID/URL or a full Tutti listing URL.
     Inspect { article: String },
+    /// Download a listing gallery to numbered local files (Ricardo ID/URL or Tutti URL).
+    Images(ImageArgs),
+    /// Search and inspect Tutti through the same paced browser bridge.
+    Tutti {
+        #[command(subcommand)]
+        command: TuttiCommand,
+    },
     /// Read the signed-in account overview.
     Account,
     /// Read or update favorites; mutations preview unless --yes is supplied.
@@ -80,6 +87,36 @@ pub enum Command {
         #[command(subcommand)]
         command: ExtensionCommand,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct ImageArgs {
+    /// Ricardo article ID/URL or a full Tutti listing URL.
+    pub article: String,
+    /// Parent directory; each run creates its own private subdirectory.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
+    /// Maximum photos to download, in gallery order.
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=50))]
+    pub limit: u32,
+    /// Download only this photo (one-based gallery index).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000), conflicts_with = "limit")]
+    pub index: Option<u32>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TuttiCommand {
+    /// Search the first result page; selected listings are individually verified.
+    Search {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=20))]
+        limit: u32,
+    },
+    /// Inspect a full Tutti listing URL, including all gallery URLs.
+    Inspect { url: String },
+    /// Download Tutti photos to local files for visual inspection.
+    Images(ImageArgs),
 }
 
 #[derive(Debug, Args)]
