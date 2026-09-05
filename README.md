@@ -76,7 +76,7 @@ affordable next bid does not guarantee an affordable auction outcome.
 
 **Filters and sorting apply to the requested search page.** Use `--page 2` to
 fetch the next page. `--limit` bounds verified candidates on that page (default
-20, maximum 100).
+5, maximum 100).
 The JSON response reports `partial`, `page_count`, `filter_scope`, and
 `sort_scope`. A partial page cannot establish a globally cheapest shortlist;
 cover all relevant pages before making that comparison. Failed detail
@@ -154,3 +154,14 @@ establish that your extension is installed or your account is connected. Run
 `doctor` and a real search to exercise your own logged-in path. Ricardo interface
 changes can require parser or route updates; the CLI should then report an
 actionable error rather than inventing successful results.
+
+## Gentle request pacing
+
+Run one CLI command at a time. The shared native bridge permits only one
+Ricardo request in flight and waits eight seconds after completion before the
+next request. Concurrent commands fail with `request_busy` without contacting
+Ricardo. Search checks articles sequentially and stops at its first failure.
+The default search limit is five candidates. There are no automatic retries.
+HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
+A connection failure also delays subsequent requests. These limits govern this
+CLI, not manual browsing or other programs, and cannot guarantee site acceptance.

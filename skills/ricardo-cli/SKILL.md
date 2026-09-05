@@ -67,3 +67,14 @@ observations and must never establish live availability.
 Keep credentials and private results out of commits and public logs. If a
 command's live behavior has not been exercised, say so rather than describing
 local unit-test success as successful account integration.
+
+## Gentle request pacing
+
+Run one CLI command at a time. The shared native bridge permits only one
+Ricardo request in flight and waits eight seconds after completion before the
+next request. Concurrent commands fail with `request_busy` without contacting
+Ricardo. Search checks articles sequentially and stops at its first failure.
+The default search limit is five candidates. There are no automatic retries.
+HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
+A connection failure also delays subsequent requests. These limits govern this
+CLI, not manual browsing or other programs, and cannot guarantee site acceptance.

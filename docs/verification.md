@@ -59,3 +59,15 @@ release passed a persistent-history smoke check and the closed-auction fixture
 through its process entry point. The original Chrome connection became
 unavailable during the final live release recheck, so that last recheck did not
 complete. The earlier live checks above passed through the tested debug binary.
+
+## Gentle pacing update
+
+The shared broker now serializes requests with an eight-second completion gap,
+refuses concurrent commands, and persists a two-minute pause after HTTP 429/403.
+Search verifies sequentially and stops at the first failed request. 31 unit
+tests and five process tests passed, including simultaneous-client refusal and
+cooldown persistence. Clippy passed with warnings denied. The installed release
+was built with `cargo rustc --release --locked -j 2 -- -C lto=off`; capability
+output confirms the two-minute configuration. No live Ricardo requests were
+sent while implementing or testing this change. Reconnect the extension bridge
+to start the updated native process.

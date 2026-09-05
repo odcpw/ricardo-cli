@@ -4,6 +4,7 @@ mod cli;
 mod history;
 mod model;
 mod output;
+mod pacing;
 use chrono::Utc;
 use clap::{CommandFactory, Parser};
 use cli::{BridgeCommand, Command, ExtensionCommand, FavoritesCommand};
@@ -71,7 +72,11 @@ fn upstream(e: String) -> Error {
     )
 }
 fn call(dir: &Path, req: Value, timeout: u64) -> Result<Value> {
-    bridge::request(dir,req,Duration::from_secs(timeout)).map_err(|e|Error::new(3,"bridge_unavailable",e,"Open the Ricardo CLI extension and Connect, or attach an agent worker to ricardo bridge serve. Run ricardo doctor --json."))
+    bridge::request(dir,req,Duration::from_secs(timeout)).map_err(|e| {
+        if e.contains("rate_limit_cooldown") || e.contains("request_busy") {
+            Error{exit:5,code:if e.contains("rate_limit_cooldown"){"rate_limit_cooldown"}else{"request_busy"},message:e,hint:"Wait for the cooldown or current command to finish. Do not run parallel commands or automatic retries.".into(),retryable:false}
+        }else{Error::new(3,"bridge_unavailable",e,"Open the Ricardo CLI extension and Connect; run ricardo doctor --json.")}
+    })
 }
 fn fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String, String)> {
     validate_read_path(path)?;
@@ -100,12 +105,7 @@ fn fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String, String
         ));
     }
     if matches!(status, 403 | 429) {
-        return Err(Error::new(
-            5,
-            "upstream_blocked",
-            format!("Ricardo returned HTTP {status}"),
-            "Open Ricardo in Chrome to resolve the challenge, or wait before retrying",
-        ));
+        return Err(Error{exit:5,code:"upstream_blocked",message:format!("Ricardo returned HTTP {status}; search stopped"),hint:"The shared bridge pauses Ricardo requests for two minutes. Do not retry or reconnect to bypass the cooldown.".into(),retryable:false});
     }
     if status == 404 {
         return Err(Error::new(
@@ -371,41 +371,20 @@ fn run(c: &cli::Cli, dir: &Path) -> Result<Value> {
             let candidates = items.len();
             items.truncate(s.limit as usize);
             let mut verified = Vec::new();
-            let mut warnings = Vec::new();
-            for batch in items.chunks(4) {
-                let results = std::thread::scope(|scope| {
-                    batch
-                        .iter()
-                        .map(|l| scope.spawn(move || inspect(dir, &l.url, c.timeout)))
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .map(|h| {
-                            h.join().unwrap_or_else(|_| {
-                                Err(upstream("Article verification worker failed".into()))
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                });
-                for (l, result) in batch.iter().zip(results) {
-                    match result {
-                        Ok(d) => {
-                            if (s.include_ended || d.status == "active")
-                                && s.max_price
-                                    .is_none_or(|p| d.entry_price().is_some_and(|v| v <= p))
-                                && s.category
-                                    .as_ref()
-                                    .is_none_or(|v| d.category_id.as_ref() == Some(v))
-                                && s.product_type
-                                    .as_ref()
-                                    .is_none_or(|v| d.product_type.as_ref() == Some(v))
-                            {
-                                verified.push(d)
-                            }
-                        }
-                        Err(e) => {
-                            warnings.push(json!({"id":l.id,"code":e.code,"message":e.message}))
-                        }
-                    }
+            let warnings: Vec<Value> = Vec::new();
+            for l in items {
+                let d = inspect(dir, &l.url, c.timeout)?;
+                if (s.include_ended || d.status == "active")
+                    && s.max_price
+                        .is_none_or(|p| d.entry_price().is_some_and(|v| v <= p))
+                    && s.category
+                        .as_ref()
+                        .is_none_or(|v| d.category_id.as_ref() == Some(v))
+                    && s.product_type
+                        .as_ref()
+                        .is_none_or(|v| d.product_type.as_ref() == Some(v))
+                {
+                    verified.push(d);
                 }
             }
             match s.sort {

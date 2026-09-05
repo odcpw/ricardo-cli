@@ -223,6 +223,7 @@ pub fn serve(data_dir: &Path, native: bool) -> Result<(), String> {
         );
     });
     let clients = Arc::new(AtomicUsize::new(0));
+    let pacing = Arc::new(Mutex::new(crate::pacing::Pacing::open(data_dir)?));
     while connected.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut socket, _)) => {
@@ -238,6 +239,7 @@ pub fn serve(data_dir: &Path, native: bool) -> Result<(), String> {
                     continue;
                 }
                 let (pending, output, clients) = (pending.clone(), output.clone(), clients.clone());
+                let pacing = pacing.clone();
                 thread::spawn(move || {
                     let result: Result<Value, String> = (|| {
                         let mut reader =
@@ -251,6 +253,10 @@ pub fn serve(data_dir: &Path, native: bool) -> Result<(), String> {
                                 json!({"transport":if native {"native_messaging"} else {"jsonl"},"connected":true,"authentication":"unverified"}),
                             );
                         }
+                        let mut pace = pacing.try_lock().map_err(|_| "request_busy: another browser request is in progress; run CLI commands sequentially")?;
+                        let delay = pace.delay(crate::pacing::now_ms())?;
+                        thread::sleep(delay);
+                        pace.started(crate::pacing::now_ms())?;
                         let id = uuid::Uuid::new_v4().to_string();
                         let (tx, rx) = mpsc::sync_channel(1);
                         pending.lock().unwrap().insert(id.clone(), tx);
@@ -265,6 +271,7 @@ pub fn serve(data_dir: &Path, native: bool) -> Result<(), String> {
                         }
                         let reply = rx.recv_timeout(Duration::from_secs(45));
                         pending.lock().unwrap().remove(&id);
+                        pace.finished(reply.as_ref().ok(), crate::pacing::now_ms())?;
                         let reply =
                             reply.map_err(|_| "Browser worker timed out or disconnected")?;
                         if let Some(error) = reply.get("error") {

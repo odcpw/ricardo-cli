@@ -41,3 +41,14 @@ The browser accepts `{"op":"favorite","action":"add","article":"1327242570"}` or
 These calls execute inside the existing Ricardo tab with browser-held credentials. The bridge returns the HTTP status and response body and never retries a mutation. A network failure leaves the outcome uncertain; read saved articles before deciding whether another action is needed. This operation cannot submit bids, purchases, seller messages, or other account changes.
 
 The extension uses only `nativeMessaging`, `scripting`, and the Ricardo host permission. Chrome permits querying matching tab metadata through a host permission, so broad `tabs` access is unnecessary: [Chrome Tabs API permissions](https://developer.chrome.com/docs/extensions/reference/api/tabs#permissions).
+
+## Gentle request pacing
+
+Run one CLI command at a time. The shared native bridge permits only one
+Ricardo request in flight and waits eight seconds after completion before the
+next request. Concurrent commands fail with `request_busy` without contacting
+Ricardo. Search checks articles sequentially and stops at its first failure.
+The default search limit is five candidates. There are no automatic retries.
+HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
+A connection failure also delays subsequent requests. These limits govern this
+CLI, not manual browsing or other programs, and cannot guarantee site acceptance.

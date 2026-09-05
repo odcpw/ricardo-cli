@@ -96,3 +96,55 @@ fn closed_article_fixture_cannot_be_reported_as_available_by_process() {
     assert!(envelope["data"]["next_bid"].is_null());
     assert!(envelope["data"]["buy_now"].is_null());
 }
+
+#[test]
+fn shared_broker_refuses_parallel_requests_and_stops_after_rate_limit() {
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let mut broker = Command::new(env!("CARGO_BIN_EXE_ricardo"))
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "bridge",
+            "serve",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if dir.path().join("bridge.sock").exists() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let first = Command::new(env!("CARGO_BIN_EXE_ricardo"))
+        .args([
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "search",
+            "P2S",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(broker.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let frame: Value = serde_json::from_str(&line).unwrap();
+    let second = run(&["search", "P1S", "--json"], dir.path());
+    let second: Value = serde_json::from_slice(&second.stdout).unwrap();
+    let response = json!({"id":frame["id"],"result":{"status":429,"url":"https://www.ricardo.ch/de/s/P2S/","content_type":"text/html","body":"rate limited"}});
+    writeln!(broker.stdin.as_mut().unwrap(), "{response}").unwrap();
+    let first = first.wait_with_output().unwrap();
+    let third = run(&["search", "P2S", "--json"], dir.path());
+    let third: Value = serde_json::from_slice(&third.stdout).unwrap();
+    drop(broker.stdin.take());
+    let _ = broker.wait();
+    assert_eq!(second["error"]["code"], "request_busy");
+    assert_eq!(first.status.code(), Some(5));
+    assert_eq!(third["error"]["code"], "rate_limit_cooldown");
+    assert_eq!(third["error"]["retryable"], false);
+}

@@ -90,7 +90,7 @@ pub struct SearchArgs {
     /// Maximum next bid or purchase price in CHF; auction outcome can be higher.
     #[arg(long, value_parser = nonnegative_price)]
     pub max_price: Option<f64>,
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=100))]
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=100))]
     pub limit: u32,
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=1000))]
     pub page: u32,

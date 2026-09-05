@@ -113,3 +113,14 @@ ricardo history "Bambu P1S" --limit 10 --json
 extension uses the hidden native messaging transport. Ordinary consumers call
 the read commands and do not need to implement either transport. `--no-color`
 is accepted globally; output has no ANSI styling by default.
+
+## Gentle request pacing
+
+Run one CLI command at a time. The shared native bridge permits only one
+Ricardo request in flight and waits eight seconds after completion before the
+next request. Concurrent commands fail with `request_busy` without contacting
+Ricardo. Search checks articles sequentially and stops at its first failure.
+The default search limit is five candidates. There are no automatic retries.
+HTTP 429 or 403 pauses requests for two minutes; that cooldown survives reconnects.
+A connection failure also delays subsequent requests. These limits govern this
+CLI, not manual browsing or other programs, and cannot guarantee site acceptance.

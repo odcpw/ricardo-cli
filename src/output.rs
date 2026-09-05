@@ -114,6 +114,7 @@ pub fn capabilities() -> Value {
         "exit_codes": {"0":"success", "2":"invalid input", "3":"bridge unavailable or timeout", "4":"authentication required", "5":"blocked or challenge", "6":"upstream response or interface changed", "7":"unsafe or unsupported operation", "8":"local I/O failure"},
         "envelope": {"schema_version":"string", "ok":"boolean", "data":"value or null", "error":"null or {code,message,hint,retryable}"},
         "environment": {"NO_COLOR":"Output has no ANSI styling by default", "XDG_DATA_HOME":"Default local state root when configured"},
+        "request_pacing":{"concurrency":1,"gap_after_completion_seconds":8,"http_429_cooldown_seconds":120,"automatic_retries":false},
         "limitations": [
             "No bids, purchases, seller messages, listing publication, or payment operations are exposed.",
             "Ricardo interface changes can make an operation unsupported; errors do not fall back to stale success.",
