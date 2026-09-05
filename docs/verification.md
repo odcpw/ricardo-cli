@@ -48,3 +48,14 @@ agent worker described above. Chrome’s browser-automation URL policy rejected
 `chrome://extensions` and prohibited workarounds. Loading the extension therefore
 requires the user’s manual action, followed by native-host registration and
 pressing Connect bridge. `ricardo doctor --json` verifies that final setup.
+
+## Installed release
+
+`cargo build --release --locked -j 1` completed successfully. The optimized
+executable is installed at `/home/oliver/.local/bin/ricardo` (39,395,200 bytes).
+Ten `capabilities --json` runs had a median local process duration of 2.83 ms
+on this machine; browser/network operations add their own latency. The installed
+release passed a persistent-history smoke check and the closed-auction fixture
+through its process entry point. The original Chrome connection became
+unavailable during the final live release recheck, so that last recheck did not
+complete. The earlier live checks above passed through the tested debug binary.
