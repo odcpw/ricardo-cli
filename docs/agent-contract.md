@@ -171,3 +171,14 @@ success. Photos are local artifacts: do not commit them or publish them.
 
 All new requests share the bridge's eight-second gap, single-request concurrency
 and two-minute 403/429 cooldown. There are no automatic retries.
+
+## Ricardo questions and seller answers
+
+`inspect` (and verified search results) includes `questions_and_answers` from
+that exact listing's embedded page query, without an extra network request.
+Read `items[].question.text` and `items[].answer.text` before concluding that
+hours, warranty, faults or accessories are unspecified. Answers preserve their
+dates and are seller claims. An unanswered question has `answer: null`.
+`status: not_loaded` means unavailable data, not zero questions. `loaded`
+refers only to the question data embedded in the page; additional pagination
+is not fetched. User account IDs and nicknames are excluded from this output.

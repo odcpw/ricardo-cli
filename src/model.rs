@@ -27,6 +27,8 @@ pub struct Listing {
     pub seller: Value,
     pub description: Option<String>,
     pub images: Vec<String>,
+    #[serde(default)]
+    pub questions_and_answers: Value,
 }
 impl Listing {
     pub fn entry_price(&self) -> Option<f64> {
@@ -202,11 +204,56 @@ pub fn search_listings(html: &str, checked: DateTime<Utc>) -> Result<(Vec<Listin
             shipping: a["shipping"].clone(),
             seller: json!({"id":a["sellerId"]}),
             description: None,
+            questions_and_answers: json!({"status":"not_loaded","items":[],"coverage":"Search summaries do not include questions"}),
             images: field(a, "image").into_iter().collect(),
         });
     }
     Ok((listings, total))
 }
+fn listing_questions(values: &[Value], expected: &str) -> Result<Value, String> {
+    let query = values
+        .iter()
+        .filter_map(|v| {
+            v.pointer("/props/pageProps/dehydratedState/queries")
+                .and_then(Value::as_array)
+        })
+        .flatten()
+        .find(|q| {
+            q["queryKey"][0] == "get-questions-and-answers"
+                && q["queryKey"][1].as_str() == Some(expected)
+        });
+    let Some(query) = query else {
+        return Ok(
+            json!({"status":"not_loaded","items":[],"coverage":"Question data missing from this page; this does not mean there are no questions"}),
+        );
+    };
+    if query["state"]["status"] != "success" {
+        return Ok(
+            json!({"status":"not_loaded","items":[],"coverage":"Embedded question query did not succeed"}),
+        );
+    }
+    let rows = query["state"]["data"]
+        .as_array()
+        .ok_or("Ricardo questions response shape changed")?;
+    let entry = |v: &Value| -> Result<Value, String> {
+        let text = v["text"].as_str().ok_or("Question/answer text missing")?;
+        Ok(json!({"id":v["id"],"date":v["date"],"text":text}))
+    };
+    let mut items = Vec::new();
+    for row in rows {
+        let question = entry(&row["question"])?;
+        let answer = if row["answer"].is_null() {
+            Value::Null
+        } else {
+            entry(&row["answer"])?
+        };
+        items.push(json!({"question":question,"answer":answer}));
+    }
+    Ok(
+        json!({"status":"loaded","count":items.len(),"items":items,"coverage":"Questions embedded in this listing page; additional pages are not fetched","claims":"Answers are seller statements, not independently verified facts"}),
+    )
+}
+
 pub fn detail(html: &str, expected: &str, checked: DateTime<Utc>) -> Result<Listing, String> {
     let values = page_data(html)?;
     let a = values
@@ -251,6 +298,7 @@ pub fn detail(html: &str, expected: &str, checked: DateTime<Utc>) -> Result<List
         .and_then(|x| field(x, "alternateUrl"))
         .unwrap_or_else(|| canonical_url(html, expected));
     Ok(Listing {
+        questions_and_answers: listing_questions(&values, expected)?,
         id: expected.into(),
         title,
         url,
@@ -309,6 +357,53 @@ pub fn detail(html: &str, expected: &str, checked: DateTime<Utc>) -> Result<List
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn question_values() -> Vec<Value> {
+        let q: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/questions-p2s.json")).unwrap();
+        vec![json!({"props":{"pageProps":{"dehydratedState":{"queries":[q]}}}})]
+    }
+    #[test]
+    fn answers_preserve_hours_warranty_and_dates() {
+        let q = listing_questions(&question_values(), "1328607492").unwrap();
+        assert_eq!(q["status"], "loaded");
+        assert_eq!(q["count"], 2);
+        assert!(
+            q["items"][0]["answer"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("590h")
+        );
+        assert!(
+            q["items"][0]["answer"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("19.2.2028")
+        );
+        assert_eq!(
+            q["items"][0]["answer"]["date"],
+            "2026-09-03T14:22:57.535338Z"
+        );
+        assert!(q["items"][0]["answer"].get("user_id").is_none());
+    }
+    #[test]
+    fn question_scope_and_absence_are_explicit() {
+        let q = listing_questions(&question_values(), "999999").unwrap();
+        assert_eq!(q["status"], "not_loaded");
+        assert_eq!(
+            listing_questions(&[], "1328607492").unwrap()["status"],
+            "not_loaded"
+        );
+    }
+    #[test]
+    fn unanswered_and_malformed_questions_are_distinct() {
+        let mut v = question_values();
+        v[0]["props"]["pageProps"]["dehydratedState"]["queries"][0]["state"]["data"][0]["answer"] =
+            Value::Null;
+        assert!(listing_questions(&v, "1328607492").unwrap()["items"][0]["answer"].is_null());
+        v[0]["props"]["pageProps"]["dehydratedState"]["queries"][0]["state"]["data"] =
+            json!({"unexpected":true});
+        assert!(listing_questions(&v, "1328607492").is_err());
+    }
     fn now() -> DateTime<Utc> {
         "2026-09-05T09:00:00Z".parse().unwrap()
     }

@@ -115,6 +115,7 @@ pub fn capabilities() -> Value {
         "schema_version": SCHEMA_VERSION,
         "transport": "logged-in browser extension and local native messaging bridge",
         "marketplaces":["ricardo","tutti"], "minimum_extension_version":"0.2.0",
+        "ricardo_inspection_fields":["description","images","questions_and_answers"],
         "commands": [
             {"command":"search", "access":"read", "example":"ricardo search Bambu P2S --max-price 350 --json"},
             {"command":"inspect", "access":"read", "example":"ricardo inspect ARTICLE_ID --json"},

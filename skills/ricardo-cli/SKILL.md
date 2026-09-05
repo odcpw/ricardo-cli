@@ -95,3 +95,14 @@ not a live reading from the machine. Do not infer wear or warranty from an image
 
 Requires extension 0.2.0 or newer with Tutti and both image-CDN permissions.
 The existing paced bridge governs photos too; do not parallelize commands.
+
+## Ricardo questions and seller answers
+
+`inspect` (and verified search results) includes `questions_and_answers` from
+that exact listing's embedded page query, without an extra network request.
+Read `items[].question.text` and `items[].answer.text` before concluding that
+hours, warranty, faults or accessories are unspecified. Answers preserve their
+dates and are seller claims. An unanswered question has `answer: null`.
+`status: not_loaded` means unavailable data, not zero questions. `loaded`
+refers only to the question data embedded in the page; additional pagination
+is not fetched. User account IDs and nicknames are excluded from this output.

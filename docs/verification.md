@@ -98,3 +98,20 @@ Installed the release binary at `/home/oliver/.local/bin/ricardo`. A live
 `ricardo tutti inspect` call returned the expected `extension_outdated` error
 (exit 7, non-retryable) from the still-running older extension, with the reload
 instruction. No Tutti request was sent by that old handler.
+
+## 2026-09-05: Ricardo questions and answers
+
+Inspection and verified search results now include the exact article's embedded
+`get-questions-and-answers` query, without additional marketplace requests.
+Public live reads of article 1328607492 confirmed two seller answers stating
+590 hours, warranty until 19 February 2028, no returns, and paid repairs until
+19 February 2031. These are seller statements, not independently verified
+warranty or usage evidence. Fixtures omit account IDs and nicknames.
+
+41 Rust unit tests and 7 process tests passed (48 total); Clippy passed with
+warnings denied. Tests cover article scoping, missing data, unanswered questions,
+malformed response shape, and preservation of answer text and dates.
+The optimized release was built and installed. Its final live inspection could
+not run because the browser bridge had disconnected (`bridge_unavailable`,
+exit 3). Earlier live page reads verified the source shape; the installed
+parser's live end-to-end verification remains pending reconnection.
