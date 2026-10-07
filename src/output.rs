@@ -128,7 +128,14 @@ pub fn capabilities() -> Value {
             {"command":"favorites add", "access":"write", "confirmation":"--yes; otherwise preview"},
             {"command":"favorites remove", "access":"write", "confirmation":"--yes; otherwise preview"},
             {"command":"buying", "access":"read", "scope":"offers, not completed orders", "pagination":{"offset_default":0,"limit_default":30,"limit_max":30}},
-            {"command":"selling", "access":"read", "scope":"active offers"},
+            {"command":"selling", "access":"read", "scope":"active offers", "example":"ricardo selling --json"},
+            {"command":"selling sold", "access":"read", "requires_extension":"0.3.0", "example":"ricardo selling sold --limit 30 --json",
+                "scope":"sold orders for the signed-in seller; buyer identity, contact details, addresses, payment references and pickup addresses omitted; not recorded in history",
+                "pagination":{"offset_default":0,"offset_max":10000,"limit_default":30,"limit_max":30}, "requests":1},
+            {"command":"selling drafts", "access":"read", "requires_extension":"0.3.0", "example":"ricardo selling drafts --json",
+                "scope":"drafts tab; draft item shape not yet observed", "requests":1},
+            {"command":"selling status", "access":"read", "requires_extension":"0.3.0", "example":"ricardo selling status --json",
+                "scope":"listing limit, orders awaiting action, unread-message count; message contents are not read", "requests":3, "minimum_duration_seconds":16},
             {"command":"notifications", "access":"read"},
             {"command":"page", "access":"read"},
             {"command":"history", "access":"local-read"},
@@ -152,7 +159,8 @@ pub fn capabilities() -> Value {
             "History is a record of earlier observations, not proof of current availability.",
             "An auction price within budget is not a guaranteed purchase price."
             ,"Search filters and sorting apply within the requested page, not across all results. Returned articles are individually verified."
-            ,"Account API commands preserve upstream data; buying returns offers rather than completed orders, and selling returns active offers only."
+            ,"Account API commands preserve upstream data; buying returns offers rather than completed orders, and bare selling returns active offers only."
+            ,"Seller views (selling sold, drafts, status) are read-only and need extension 0.3.0+; sold orders omit buyer identity, contact details, addresses and payment references. Drafting, editing and publishing listings are not supported: do those in Ricardo."
         ]
     })
 }
@@ -179,6 +187,32 @@ mod tests {
         assert_eq!(err["ok"], false);
         assert!(err["data"].is_null());
         assert_eq!(err["error"]["retryable"], true);
+    }
+
+    #[test]
+    fn capabilities_disclose_seller_views_and_their_extension_requirement() {
+        let caps = capabilities();
+        let commands = caps["commands"].as_array().unwrap();
+        let find = |name: &str| commands.iter().find(|c| c["command"] == name).unwrap();
+        for name in ["selling sold", "selling drafts", "selling status"] {
+            let c = find(name);
+            assert_eq!(c["access"], "read", "{name}");
+            assert_eq!(c["requires_extension"], "0.3.0", "{name}");
+            assert!(
+                c["example"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("ricardo selling")
+            );
+        }
+        assert_eq!(find("selling")["scope"], "active offers");
+        assert_eq!(find("selling sold")["pagination"]["limit_max"], 30);
+        assert_eq!(find("selling status")["requests"], 3);
+        assert!(find("selling").get("requires_extension").is_none());
+        let limits = caps["limitations"].to_string();
+        assert!(limits.contains("Drafting, editing and publishing"));
+        assert!(limits.contains("omit buyer identity"));
+        assert_eq!(caps["minimum_extension_version"], "0.2.0");
     }
 
     #[test]

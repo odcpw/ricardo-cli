@@ -6,10 +6,11 @@ mod media;
 mod model;
 mod output;
 mod pacing;
+mod seller;
 mod tutti;
 use chrono::Utc;
 use clap::{CommandFactory, Parser};
-use cli::{BridgeCommand, Command, ExtensionCommand, FavoritesCommand};
+use cli::{BridgeCommand, Command, ExtensionCommand, FavoritesCommand, SellingCommand};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -73,10 +74,22 @@ fn upstream(e: String) -> Error {
         "Run ricardo doctor --json; inspect the live page in Chrome. Do not use cached results.",
     )
 }
+/// Messages an extension older than the requested operation or route returns.
+fn extension_outdated(message: &str) -> bool {
+    [
+        "Unsupported browser operation",
+        "Unknown browser operation",
+        "Route is not an approved read endpoint",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker))
+}
 fn call(dir: &Path, req: Value, timeout: u64) -> Result<Value> {
     bridge::request(dir,req,Duration::from_secs(timeout)).map_err(|e| {
-        if e.contains("Unsupported browser operation") {
-            Error{exit:7,code:"extension_outdated",message:e,hint:"Reload the Ricardo CLI unpacked extension (0.2.0+) in Chrome, then click Connect bridge.".into(),retryable:false}
+        if extension_outdated(&e) {
+            Error{exit:7,code:"extension_outdated",message:e,hint:"Reload the Ricardo CLI unpacked extension (0.3.0+) in Chrome, then click Connect bridge.".into(),retryable:false}
+        } else if e.starts_with("bridge_timeout") {
+            Error{exit:3,code:"bridge_timeout",message:e,hint:"The connected browser did not answer in time. Check the Ricardo tab is open and responsive, then run ricardo bridge status --json; raise --timeout for slow pages (pacing waits are added automatically).".into(),retryable:true}
         } else if e.contains("rate_limit_cooldown") || e.contains("request_busy") {
             Error{exit:5,code:if e.contains("rate_limit_cooldown"){"rate_limit_cooldown"}else{"request_busy"},message:e,hint:"Wait for the cooldown or current command to finish. Do not run parallel commands or automatic retries.".into(),retryable:false}
         }else{Error::new(3,"bridge_unavailable",e,"Open the Ricardo CLI extension and Connect; run ricardo doctor --json.")}
@@ -161,9 +174,24 @@ fn listing_images(dir: &Path, args: &cli::ImageArgs, timeout: u64) -> Result<Val
     };
     media::download(dir, args, data, timeout)
 }
+/// A verified Ricardo browser response with the browser's observation time.
+struct Fetched {
+    body: String,
+    content_type: String,
+    url: String,
+    checked_at: String,
+}
 fn fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String, String)> {
+    let f = fetch_full(dir, path, timeout)?;
+    Ok((f.body, f.content_type, f.url))
+}
+fn fetch_full(dir: &Path, path: &str, timeout: u64) -> Result<Fetched> {
     validate_read_path(path)?;
     let r = call(dir, json!({"op":"fetch","path":path}), timeout)?;
+    ricardo_response(&r)
+}
+/// Shared HTTP/origin/size checks for every Ricardo response from the browser.
+fn ricardo_response(r: &Value) -> Result<Fetched> {
     let status = r["status"]
         .as_u64()
         .ok_or_else(|| upstream("Browser response missing HTTP status".into()))?;
@@ -208,7 +236,35 @@ fn fetch(dir: &Path, path: &str, timeout: u64) -> Result<(String, String, String
     if body.len() > 4 * 1024 * 1024 {
         return Err(upstream("Response exceeds 4 MiB".into()));
     }
-    Ok((body.to_owned(), content_type, url.to_owned()))
+    // Prefer the browser's own observation time; fall back for plain workers.
+    let checked_at = r["checked_at"]
+        .as_str()
+        .filter(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
+        .map_or_else(|| Utc::now().to_rfc3339(), str::to_owned);
+    Ok(Fetched {
+        body: body.to_owned(),
+        content_type,
+        url: url.to_owned(),
+        checked_at,
+    })
+}
+/// Parse a seller JSON response. HTML means a login page or challenge.
+fn parse_json(f: &Fetched, expected_path: &str) -> Result<Value> {
+    if url::Url::parse(&f.url).is_ok_and(|u| u.path() != expected_path) {
+        return Err(upstream(format!(
+            "Ricardo answered {expected_path} from an unexpected URL"
+        )));
+    }
+    if f.content_type.contains("html") {
+        return Err(Error::new(
+            4,
+            "authentication_required",
+            "Expected JSON; got a page instead",
+            "Sign in to Ricardo and retry",
+        ));
+    }
+    serde_json::from_str(&f.body)
+        .map_err(|e| upstream(format!("Ricardo response is not JSON: {e}")))
 }
 fn validate_read_path(path: &str) -> Result<()> {
     let bad = || {
@@ -219,34 +275,59 @@ fn validate_read_path(path: &str) -> Result<()> {
             "Use ricardo search QUERY, ricardo inspect ID, or ricardo capabilities --json",
         )
     };
+    if !read_route_allowed(path) {
+        return Err(bad());
+    }
+    Ok(())
+}
+/// Exact mirror of the extension's `validatePath`, so a route the CLI sends is
+/// never rejected by a current extension (that rejection means "outdated").
+fn read_route_allowed(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
     if !path.starts_with('/')
         || path.starts_with("//")
-        || path.chars().any(|c| c.is_control() || c == '\\')
+        || path
+            .chars()
+            .any(|c| c <= ' ' || c == '\\' || c.is_control())
+        || ["%2f", "%5c", "%2e"].iter().any(|m| lower.contains(m))
     {
-        return Err(bad());
+        return false;
     }
-    let u = url::Url::parse(&format!("https://www.ricardo.ch{path}")).map_err(|_| bad())?;
+    let Ok(u) = url::Url::parse(&format!("https://www.ricardo.ch{path}")) else {
+        return false;
+    };
     if u.host_str() != Some("www.ricardo.ch") || u.fragment().is_some() {
-        return Err(bad());
+        return false;
     }
     let p = u.path();
-    if p == "/de/"
-        || p.starts_with("/de/s/")
-        || p.starts_with("/de/a/")
+    let one_segment = |rest: &str| {
+        let seg = rest.strip_suffix('/').unwrap_or(rest);
+        !seg.is_empty() && !seg.contains('/')
+    };
+    // /de/a/(?:[^/]*-)?\d+/? : trailing ASCII digits, optionally after "<slug>-".
+    let article = |rest: &str| {
+        let seg = rest.strip_suffix('/').unwrap_or(rest);
+        let prefix = seg.trim_end_matches(|c: char| c.is_ascii_digit());
+        !seg.contains('/')
+            && prefix.len() < seg.len()
+            && (prefix.is_empty() || prefix.ends_with('-'))
+    };
+    p == "/de/"
+        || p.strip_prefix("/de/s/").is_some_and(one_segment)
+        || p.strip_prefix("/de/a/").is_some_and(article)
         || matches!(
             p,
             "/de/my-ricardo/saved/articles/"
                 | "/de/my-ricardo/selling/offers/"
+                | "/de/my-ricardo/selling/drafts/"
+                | "/api/orders-spa/selling/selling-limits"
+                | "/api/orders-spa/selling/has-orders-pending-actions"
+                | "/api/frontend/messaging/unreads"
                 | "/api/orders-spa/saved-articles"
                 | "/api/orders-spa/buying/offers"
                 | "/api/frontend/notifications"
                 | "/api/mfa/notifications"
         )
-    {
-        Ok(())
-    } else {
-        Err(bad())
-    }
 }
 fn article_input(s: &str) -> Result<(String, Option<String>)> {
     let bad = || {
@@ -337,6 +418,57 @@ fn raw_api(dir: &Path, path: &str, timeout: u64) -> Result<Value> {
     Ok(
         json!({"source":"live_browser","checked_at":Utc::now().to_rfc3339(),"url":url,"upstream":data}),
     )
+}
+/// Bare `ricardo selling`: active offers, unchanged upstream data.
+fn selling_offers(dir: &Path, timeout: u64) -> Result<Value> {
+    let (html, _, url) = fetch(dir, "/de/my-ricardo/selling/offers/", timeout)?;
+    let values = model::page_data(&html).map_err(upstream)?;
+    let q = values
+        .iter()
+        .find_map(|v| model::find(v, &|x| x["queryKey"][0] == "selling-offers"))
+        .ok_or_else(|| {
+            upstream("Selling offers query missing; session or interface changed".into())
+        })?;
+    Ok(
+        json!({"source":"live_browser","checked_at":Utc::now().to_rfc3339(),"url":url,"upstream":q["state"]["data"]}),
+    )
+}
+/// `ricardo selling sold`: one fixed seller-orders search, normalized without personal data.
+fn selling_sold(dir: &Path, offset: u32, limit: u32, timeout: u64) -> Result<Value> {
+    const ROUTE: &str = "/api/orders-spa/buying-selling/search";
+    let r = call(
+        dir,
+        json!({"op":"orders","role":"seller","offset":offset,"limit":limit}),
+        timeout,
+    )?;
+    let f = ricardo_response(&r)?;
+    let upstream_orders = parse_json(&f, ROUTE)?;
+    seller::sold_data(&upstream_orders, offset, limit, &f.checked_at).map_err(upstream)
+}
+/// `ricardo selling drafts`: only the page's own `selling-drafts` query.
+fn selling_drafts(dir: &Path, timeout: u64) -> Result<Value> {
+    let f = fetch_full(dir, "/de/my-ricardo/selling/drafts/", timeout)?;
+    seller::drafts_data(&f.body, &f.url, &f.checked_at).map_err(upstream)
+}
+/// `ricardo selling status`: three sequential paced reads. Each response is
+/// type-checked before the next request, so the first failure stops the command.
+fn selling_status(dir: &Path, timeout: u64) -> Result<Value> {
+    let read = |path: &str| -> Result<(Value, String)> {
+        let f = fetch_full(dir, path, timeout)?;
+        Ok((parse_json(&f, path)?, f.checked_at))
+    };
+    let (limits, limits_at) = read("/api/orders-spa/selling/selling-limits")?;
+    let limits = seller::selling_limits(&limits).map_err(upstream)?;
+    let (pending, pending_at) = read("/api/orders-spa/selling/has-orders-pending-actions")?;
+    let pending = seller::pending_actions(&pending).map_err(upstream)?;
+    let (unread, unread_at) = read("/api/frontend/messaging/unreads")?;
+    let unread = seller::unreads(&unread).map_err(upstream)?;
+    Ok(seller::status_data(
+        limits,
+        pending,
+        unread,
+        [&limits_at, &pending_at, &unread_at],
+    ))
 }
 fn page(dir: &Path, input: &str, timeout: u64) -> Result<Value> {
     let path = if input.starts_with('/') {
@@ -578,24 +710,65 @@ fn run(c: &cli::Cli, dir: &Path) -> Result<Value> {
             data["scope"] = json!("buying offers; completed orders are not included");
             Ok(data)
         }
-        Command::Selling => {
-            let (html, _, url) = fetch(dir, "/de/my-ricardo/selling/offers/", c.timeout)?;
-            let values = model::page_data(&html).map_err(upstream)?;
-            let q = values
-                .iter()
-                .find_map(|v| model::find(v, &|x| x["queryKey"][0] == "selling-offers"))
-                .ok_or_else(|| {
-                    upstream("Selling offers query missing; session or interface changed".into())
-                })?;
-            Ok(
-                json!({"source":"live_browser","checked_at":Utc::now().to_rfc3339(),"url":url,"upstream":q["state"]["data"]}),
-            )
-        }
+        Command::Selling { command } => match command {
+            None => selling_offers(dir, c.timeout),
+            Some(SellingCommand::Sold { offset, limit }) => {
+                selling_sold(dir, *offset, *limit, c.timeout)
+            }
+            Some(SellingCommand::Drafts) => selling_drafts(dir, c.timeout),
+            Some(SellingCommand::Status) => selling_status(dir, c.timeout),
+        },
         Command::Notifications => raw_api(dir, "/api/frontend/notifications?locale=de", c.timeout),
         Command::Page { url } => page(dir, url, c.timeout),
         Command::History { query, limit } => {
             history::list(dir, query.as_deref(), *limit).map_err(io_error)
         }
+    }
+}
+/// First words that are not global flags, e.g. `["selling", "sold"]`.
+fn command_words(args: &[std::ffi::OsString]) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut skip_value = false;
+    for arg in args.iter().skip(1).map(|a| a.to_string_lossy()) {
+        if std::mem::take(&mut skip_value) || arg.starts_with('-') {
+            skip_value = matches!(arg.as_ref(), "--timeout" | "--data-dir");
+            continue;
+        }
+        words.push(arg.into_owned());
+        if words.len() == 2 {
+            break;
+        }
+    }
+    words
+}
+const GENERIC_USAGE_HINT: &str =
+    "Run ricardo --help or ricardo help search for supported commands and flags";
+/// Hint for a rejected command line; names the right command for likely guesses.
+fn usage_hint(args: &[std::ffi::OsString]) -> String {
+    let words = command_words(args);
+    let word = |i: usize| words.get(i).map_or("", String::as_str);
+    match (word(0), word(1)) {
+        ("sold" | "sales" | "sale" | "orders" | "order", _)
+        | ("selling", "sold-orders" | "orders" | "order" | "sales" | "sale") => {
+            "Sold orders are a selling subcommand. Run: ricardo selling sold --json (optional --offset N, --limit 1-30)".into()
+        }
+        ("drafts" | "draft", _) | ("selling", "draft") => {
+            "Drafts are a selling subcommand. Run: ricardo selling drafts --json".into()
+        }
+        ("selling", "signals" | "limits" | "pending" | "unread" | "unreads" | "messages" | "summary") => {
+            "Seller account counts are a selling subcommand. Run: ricardo selling status --json".into()
+        }
+        ("unsold" | "ended" | "closed", _)
+        | ("selling", "unsold" | "ended" | "closed" | "expired") => {
+            "No separate unsold view exists. Bare ricardo selling --json returns offers with Ricardo's open/closed status facets; relist ended items in the browser (Erneut verkaufen)".into()
+        }
+        ("selling", "sold") => {
+            "ricardo selling sold accepts --offset 0-10000 and --limit 1-30 (default 30); follow pagination.next_offset. Other seller views: ricardo selling drafts, ricardo selling status".into()
+        }
+        ("selling", _) => {
+            "Run ricardo selling --help. Subcommands: sold (--offset 0-10000, --limit 1-30), drafts, status; bare ricardo selling lists active offers".into()
+        }
+        _ => GENERIC_USAGE_HINT.into(),
     }
 }
 fn main() {
@@ -616,13 +789,18 @@ fn main() {
                 print!("{e}");
                 return;
             }
+            let hint = usage_hint(&args);
+            let mut message = e.to_string();
+            // clap's guess can contradict a specific correction (e.g. `sales` → `images`).
+            if hint != GENERIC_USAGE_HINT {
+                message = message
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("tip:"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
             let _ = output::emit(
-                &output::failure(
-                    "invalid_input",
-                    &e.to_string(),
-                    "Run ricardo --help or ricardo help search for supported commands and flags",
-                    false,
-                ),
+                &output::failure("invalid_input", &message, &hint, false),
                 json_mode,
             );
             std::process::exit(2)
@@ -676,6 +854,17 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
+    fn read_routes_match_the_extension_corpus() {
+        let corpus: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/route-corpus.json")).unwrap();
+        for case in corpus["cases"].as_array().unwrap() {
+            let path = case["path"].as_str().unwrap();
+            let allowed = case["allowed"].as_bool().unwrap();
+            assert_eq!(read_route_allowed(path), allowed, "{path}");
+            assert_eq!(validate_read_path(path).is_ok(), allowed, "{path}");
+        }
+    }
+    #[test]
     fn rejects_foreign_article_origins() {
         for s in [
             "https://evil.test/de/a/x-1327242570/",
@@ -688,5 +877,88 @@ mod tests {
     #[test]
     fn accepts_article_id() {
         assert_eq!(article_input("1327242570").unwrap().0, "1327242570");
+    }
+    #[test]
+    fn read_allowlist_includes_seller_routes_and_nothing_adjacent() {
+        for path in [
+            "/de/my-ricardo/selling/offers/",
+            "/de/my-ricardo/selling/drafts/",
+            "/api/orders-spa/selling/selling-limits",
+            "/api/orders-spa/selling/has-orders-pending-actions",
+            "/api/frontend/messaging/unreads",
+            "/api/frontend/notifications?locale=de",
+        ] {
+            assert!(validate_read_path(path).is_ok(), "{path}");
+        }
+        for path in [
+            "/de/my-ricardo/selling/orders/",
+            "/de/my-ricardo/selling/drafts/1/",
+            "/de/my-ricardo/selling/",
+            "/api/orders-spa/buying-selling/search",
+            "/api/orders-spa/selling/other",
+            "/api/orders-spa/selling/selling-limits/extra",
+            "/api/frontend/messaging/",
+            "/api/frontend/messaging/unreads/1",
+            "/api/frontend/users/1/has-payout-problems",
+            "/api/frontend/money-guard/user-status",
+            "//evil.test/api/frontend/messaging/unreads",
+            "/de/my-ricardo/selling/drafts/#x",
+        ] {
+            assert!(validate_read_path(path).is_err(), "{path}");
+        }
+    }
+    #[test]
+    fn old_extension_messages_map_to_extension_outdated() {
+        for message in [
+            "{\"code\":\"browser_error\",\"message\":\"Unsupported browser operation; only fetch, resolve and favorite are enabled\"}",
+            "Route is not an approved read endpoint",
+            "Unknown browser operation: orders",
+        ] {
+            assert!(extension_outdated(message), "{message}");
+        }
+        for message in [
+            "Open Ricardo in this Chrome profile",
+            "Invalid Ricardo path",
+        ] {
+            assert!(!extension_outdated(message), "{message}");
+        }
+    }
+    fn os(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(Into::into).collect()
+    }
+    #[test]
+    fn wrong_seller_commands_get_corrections() {
+        for args in [
+            &["ricardo", "sold", "--json"][..],
+            &["ricardo", "sales", "--json"],
+            &["ricardo", "orders"],
+            &["ricardo", "--timeout", "5", "order", "--json"],
+            &["ricardo", "--data-dir", "/tmp/x", "sales"],
+            &["ricardo", "selling", "orders"],
+            &["ricardo", "selling", "sales", "--json"],
+        ] {
+            assert!(
+                usage_hint(&os(args)).contains("ricardo selling sold"),
+                "{args:?}"
+            );
+        }
+        for args in [
+            &["ricardo", "drafts", "--json"][..],
+            &["ricardo", "draft"],
+            &["ricardo", "selling", "draft"],
+        ] {
+            assert!(
+                usage_hint(&os(args)).contains("ricardo selling drafts"),
+                "{args:?}"
+            );
+        }
+        assert!(usage_hint(&os(&["ricardo", "selling", "unread"])).contains("selling status"));
+        let bounds = usage_hint(&os(&["ricardo", "selling", "sold", "--limit", "31"]));
+        assert!(bounds.contains("ricardo selling sold") && bounds.contains("--limit 1-30"));
+        assert!(bounds.contains("ricardo selling drafts"));
+        // Valid searches for the word "sold" are not hijacked.
+        let other = usage_hint(&os(&["ricardo", "search", "sold", "--limit", "0"]));
+        assert!(other.contains("ricardo --help"));
+        assert!(usage_hint(&os(&["ricardo", "bogus"])).contains("ricardo --help"));
     }
 }

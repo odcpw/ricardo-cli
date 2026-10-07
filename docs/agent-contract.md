@@ -40,7 +40,11 @@ CLI usage errors also return this envelope when `--json` is requested.
 | 7 | Unsafe or unsupported operation |
 | 8 | Local file or I/O error |
 
-Use `--timeout SECONDS` (1–300, default 30) to bound browser requests. Do not
+Use `--timeout SECONDS` (1–300, default 30) to bound each browser request. The
+broker's pacing wait (up to eight seconds) is added on top rather than charged
+to it, so a multi-request command such as `selling status` takes roughly
+requests × (8 s + request time). A browser that does not answer in time yields
+`bridge_timeout` (exit 3). Do not
 retry `retryable: false` errors without changing the condition described by
 the hint. A missing browser session needs setup, not a tight polling loop.
 
@@ -82,7 +86,8 @@ Favorites and buying accept `--offset` (default 0) and `--limit` (default and
 maximum 50 for favorites, 30 for buying). Use their `pagination.next_offset`
 for the next request; null means there is no next offset to follow. Metadata
 also includes `offset`, `limit`, `total`, and `partial`. Buying returns offers,
-not completed orders; selling returns active offers only.
+not completed orders; bare `selling` returns active offers only. Sold orders,
+drafts and seller counts are separate commands: see "Seller views" below.
 
 `favorites add ARTICLE_ID` and `favorites remove ARTICLE_ID` preview the intended
 change. Add `--yes` to explicitly request the mutation. Preview success does
@@ -95,6 +100,71 @@ those actions. Keep credentials in the browser session and keep local state
 private. Account responses can contain personal information; persisted history
 contains only normalized public listing observations.
 
+## Seller views (extension 0.3.0+)
+
+Read-only views of your own selling activity. Bare `ricardo selling` is
+unchanged and returns active offers. Update the unpacked extension to 0.3.0,
+reload it and click Connect bridge first; an older extension fails with
+`extension_outdated` (exit 7) and a reload hint, never with partial data.
+
+```bash
+ricardo selling sold --limit 30 --json      # sold orders
+ricardo selling sold --offset 30 --json     # next page (use pagination.next_offset)
+ricardo selling drafts --json               # drafts tab
+ricardo selling status --json               # listing limit, pending-action flag, unread count
+```
+
+`selling sold` accepts `--offset` 0-10000 and `--limit` 1-30 (default 30). It
+sends one fixed seller-orders search through the browser session (a query, not a
+change) and returns `source`, `checked_at`, `role`, `orders`, `status_counts`
+(Ricardo's own buckets such as `sellerToSend` and `sellerToRate`), `pagination`
+(`offset`, `limit`, `total`, `partial`, `next_offset`), `scope` and
+`privacy.omitted_fields`. Each order carries identifiers (`order_id`,
+`article_id`, `article_url`), `created_at`, CHF amounts converted exactly from
+Ricardo's integer cents (`unit_price_chf`, `shipping_cost_chf`,
+`total_price_chf`, `seller_success_fee_chf`, `seller_success_fee_rate` plus its
+raw per-ten-thousand value), `payment`, `delivery` (including `carrier`,
+`tracking_number`, `tracking_url` and `parcel_pickup`), rating and
+`contact_status` fields, `dispute_state` (null when none) and `offer_closed`.
+The success-fee rate differs between orders: read each order's own value. A
+tracking URL is kept only for Swiss Post hosts. `payment.payout_unlocked_at` says
+Ricardo released funds; it is not a bank deposit. `parcel_pickup` is a carrier
+booking, not proof of handover. `delivery.method_label` `get_by_buyer` means
+pickup.
+
+**Privacy.** Buyer identity (names, nicknames, user IDs, email, phone),
+shipping and invoice addresses, payment reference numbers, courier notes and the
+pickup address are never read, emitted or stored; open the order in Ricardo for
+them. Output is built field by field from a documented list, so new upstream
+fields do not leak. Objects whose populated shape was never observed are
+reduced to presence flags (`buyer_fee_reported`,
+`payment.secured_transaction_fee_reported`), and ratings keep only numbers and
+short codes, never free text. Sold orders are not written to local history. Order IDs,
+amounts and tracking numbers are still private account data: keep them out of
+commits and shared logs. A missing `order_id`, `article_id`, `pricing.unit_price`
+or `pricing.total_price` is an `interface_changed` error that names the field,
+never a zero.
+
+`selling drafts` returns `drafts_count`, `drafts` (upstream draft objects as
+Ricardo embeds them), `partial` and `item_shape`. No draft items had been
+observed when the command was written, so read the returned objects rather than
+assuming fields. The drafts page also embeds bank details for payout setup; only
+the `selling-drafts` data is read and those details are never emitted. A page
+without that data is an error, not zero drafts.
+
+`selling status` makes three sequential, paced requests (expect 16 seconds or
+more) and stops at the first failure. It returns `selling_limits`
+(`current`, `limit`, `remaining`), `orders_pending_action`, `unread_messages`
+(`count`, `last_updated_at`), `request_times`, `next_commands` and `scope`. When
+`orders_pending_action` is true, run `ricardo selling sold --json`. Counts only:
+message contents are never read; reply in Ricardo. Types are checked strictly;
+an unexpected shape is `interface_changed`.
+
+Drafting, editing, publishing and relisting are not supported and remain
+browser tasks. Wrong guesses such as `ricardo sales`, `ricardo orders`,
+`ricardo sold` or `ricardo drafts` exit 2 with a hint naming `ricardo selling
+sold` or `ricardo selling drafts`.
+
 ## Examples
 
 ```bash
@@ -103,6 +173,9 @@ ricardo doctor --json
 ricardo search Bambu P1S --max-price 260 --sort ending --json
 ricardo search Bambu P2S --product-type printer_3d --json
 ricardo inspect ARTICLE_ID --json
+ricardo selling sold --limit 30 --json
+ricardo selling drafts --json
+ricardo selling status --json
 ricardo favorites list --json
 ricardo favorites add ARTICLE_ID --json
 ricardo favorites add ARTICLE_ID --yes --json

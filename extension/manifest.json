@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Ricardo CLI Browser Bridge",
-  "version": "0.2.0",
-  "description": "Read Ricardo and Tutti listings and photos through your browser without exporting cookies.",
+  "version": "0.3.0",
+  "description": "Read Ricardo and Tutti listings, photos and your seller orders, drafts and counts through your browser without exporting cookies.",
   "permissions": [
     "nativeMessaging",
     "scripting"

@@ -1,4 +1,5 @@
-// Read routes and narrowly scoped saved-article actions only. No cookie
+// Read routes, one fixed read-only search POST (seller orders: a query, not a
+// mutation) and narrowly scoped saved-article actions only. No cookie
 // permission, arbitrary JavaScript, external origins, bids, or messages.
 export function validatePath(path) {
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || /[\\\x00-\x20]/.test(path)) throw new Error("Invalid Ricardo path");
@@ -6,7 +7,7 @@ export function validatePath(path) {
   if (url.origin !== "https://www.ricardo.ch" || url.hash || /%2f|%5c|%2e/i.test(path)) throw new Error("Invalid Ricardo path");
   const allowed = /^\/de\/s\/[^/]+\/?$/.test(url.pathname)
     || /^\/de\/a\/(?:[^/]*-)?\d+\/?$/.test(url.pathname)
-    || ["/de/", "/de/my-ricardo/saved/articles/", "/api/frontend/notifications", "/api/mfa/notifications", "/api/orders-spa/buying/offers", "/api/orders-spa/saved-articles", "/de/my-ricardo/selling/offers/"].includes(url.pathname);
+    || ["/de/", "/de/my-ricardo/saved/articles/", "/api/frontend/notifications", "/api/mfa/notifications", "/api/orders-spa/buying/offers", "/api/orders-spa/saved-articles", "/de/my-ricardo/selling/offers/", "/de/my-ricardo/selling/drafts/", "/api/orders-spa/selling/selling-limits", "/api/orders-spa/selling/has-orders-pending-actions", "/api/frontend/messaging/unreads"].includes(url.pathname);
   if (!allowed) throw new Error("Route is not an approved read endpoint");
   return url;
 }
@@ -84,11 +85,20 @@ export async function handleRequest(request, chromeApi = globalThis.chrome) {
     const path = "/marketplace-spa/api/saved-articles" + (request.action === "remove" ? `/${request.article}` : "");
     url = new URL(path, "https://www.ricardo.ch");
     if (request.action === "add") body = JSON.stringify({articleId: request.article});
+  } else if (request?.op === "orders") {
+    // Fixed seller-orders search. Observed in Ricardo's own interface; it reads, it does not change anything.
+    if (Object.keys(request).some(k => !["op", "role", "offset", "limit"].includes(k))) throw new Error("Orders request has unsupported fields");
+    if (request.role !== "seller") throw new Error("Orders role must be seller");
+    if (!Number.isInteger(request.offset) || request.offset < 0 || request.offset > 10000) throw new Error("Orders offset must be an integer from 0 to 10000");
+    if (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 30) throw new Error("Orders limit must be an integer from 1 to 30");
+    method = "POST";
+    url = new URL("/api/orders-spa/buying-selling/search", "https://www.ricardo.ch");
+    body = JSON.stringify({params: {isSeller: true, offset: request.offset, limit: request.limit}});
   } else if (request?.op === "fetch_tutti") {
     if (Object.keys(request).some(k => !["op", "path"].includes(k))) throw new Error("Tutti request has unsupported fields");
     url = validateTuttiPath(request.path);
   } else {
-    if (!request || request.op !== "fetch") throw new Error("Unsupported browser operation; only fetch, resolve and favorite are enabled");
+    if (!request || request.op !== "fetch") throw new Error("Unsupported browser operation; only fetch, fetch_tutti, resolve, orders, favorite and image are enabled");
     url = validatePath(request.path);
   }
   const tabs = await chromeApi.tabs.query({ url: `${url.origin}/*` });

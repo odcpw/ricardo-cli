@@ -12,7 +12,7 @@ The bridge reads Ricardo through an already signed-in `https://www.ricardo.ch` t
 
 Installation writes the native host manifest in the Linux Google Chrome and Chromium default configuration locations and creates a private launcher in the CLI data directory. Other browser profiles may require copying the manifest into their configuration's `NativeMessagingHosts` directory. The launcher refers to the current executable: install again if you move it. Launcher and manifest updates replace complete files atomically and refuse symbolic-link targets. Extension installation and account login are user actions; the tool does not alter login state.
 
-Reads use explicitly allowlisted GET routes. Saved-article changes use a separate fixed operation. The extension accepts neither JavaScript supplied by CLI callers nor arbitrary URLs or HTTP methods. The extension currently supports search/detail pages, the home page used to check login, saved-article and buying-offer endpoints, and the selling-offers page. Additional account capabilities require observed endpoint verification and an explicit route addition. A numeric-only `resolve` operation fetches the fixed article URL inside an existing Ricardo tab with a 10-second deadline. It follows redirects with `mode: "same-origin"`, which rejects external redirects, then validates HTTP status, origin, and the exact article ID in the canonical URL. It cancels the response body after reading the URL and never creates or navigates browser tabs. Other reads and saved-article mutations continue to reject redirects.
+Reads use explicitly allowlisted GET routes, plus one fixed read-only search POST (seller orders, below). Saved-article changes use a separate fixed operation. The extension accepts neither JavaScript supplied by CLI callers nor arbitrary URLs or HTTP methods. The extension currently supports search/detail pages, the home page used to check login, saved-article and buying-offer endpoints, the selling-offers and selling-drafts pages, and three seller signal endpoints (selling limits, pending order actions, unread message count). Additional account capabilities require observed endpoint verification and an explicit route addition. A numeric-only `resolve` operation fetches the fixed article URL inside an existing Ricardo tab with a 10-second deadline. It follows redirects with `mode: "same-origin"`, which rejects external redirects, then validates HTTP status, origin, and the exact article ID in the canonical URL. It cancels the response body after reading the URL and never creates or navigates browser tabs. Other reads and saved-article mutations continue to reject redirects.
 
 ## Agent worker transport
 
@@ -33,6 +33,29 @@ Failures use `{"id":"...","error":{"code":"browser_error","message":"..."}}`. St
 The Unix socket lives in the selected CLI data directory as `bridge.sock`, with mode 0600 inside a 0700 directory. A persistent advisory lock serializes startup. An existing live broker is never replaced; a stale connection-refused socket is removed. Socket cleanup runs on normal shutdown and error returns, and worker output failures disconnect pending clients promptly. The broker's `ping`/`status` reports transport availability and explicitly marks authentication unverified.
 
 `ricardo bridge native` is the Chrome native messaging variant: four-byte little-endian frame lengths, followed by JSON. Run it only via the native host launcher.
+
+## Seller views (extension 0.3.0+)
+
+Evidence for these routes is recorded in [seller-routes.md](seller-routes.md).
+
+Additional allowlisted GET routes, all read through the same fetch operation (same-origin, `credentials: include`, `cache: no-store`, `redirect: error`, 30-second timeout, 4 MiB cap, one attempt):
+
+| Route | Used by |
+| --- | --- |
+| `/de/my-ricardo/selling/drafts/` | `ricardo selling drafts` (HTML; only the `selling-drafts` dehydrated query is read) |
+| `/api/orders-spa/selling/selling-limits` | `ricardo selling status` |
+| `/api/orders-spa/selling/has-orders-pending-actions` | `ricardo selling status` |
+| `/api/frontend/messaging/unreads` | `ricardo selling status` |
+
+The fixed `orders` operation lists the seller's sold orders:
+
+```json
+{"op":"orders","role":"seller","offset":0,"limit":30}
+```
+
+Only those four fields are accepted. `role` must be `"seller"`, `offset` an integer from 0 to 10000, and `limit` an integer from 1 to 30. The extension performs exactly `POST https://www.ricardo.ch/api/orders-spa/buying-selling/search` with header `Content-Type: application/json` and body `{"params":{"isSeller":true,"offset":0,"limit":30}}` inside the existing Ricardo tab, with the same fetch options and limits as above. This POST is a search that Ricardo's own interface sends to list orders; it changes nothing. The route is not reachable through the `fetch` operation, and no caller-supplied path, method, header or body exists. The CLI normalizes the response without buyer identity, addresses, payment references or pickup addresses (see the agent contract).
+
+An extension older than 0.3.0 answers the new operation with `Unsupported browser operation` and the new routes with `Route is not an approved read endpoint`. The CLI reports either as `extension_outdated` (exit 7): reload the unpacked extension and click Connect bridge.
 
 ## Saved articles
 

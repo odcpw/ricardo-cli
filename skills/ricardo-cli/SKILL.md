@@ -36,8 +36,8 @@ and subsequent pages to cover more results. Inspect `partial`, `page_count`,
 one partial page. A small filtered result count can mean other matches remain
 on later pages. Account buying and favorites lists use `--offset` and `--limit`,
 with `pagination.next_offset` guiding the next call; their maximum limits are
-30 and 50 respectively. Buying returns offers, not completed orders, and selling
-returns active offers only.
+30 and 50 respectively. Buying returns offers, not completed orders, and bare
+selling returns active offers only (sold orders: see Seller views).
 
 Return title, article ID, plain URL, observed price type, status, closing time,
 and when checked. Keep seller claims about condition or warranty attributed.
@@ -56,6 +56,24 @@ clearly and do not guess private API requests.
 in the conversation; do not ask again for an already authorized favorite edit.
 Search and account access do not authorize purchases, bids, publications,
 payments, or seller messages. Those actions are not provided by this CLI.
+
+## Seller views
+
+For the user's own sales: `ricardo selling sold --limit 30 --json` (sold orders,
+`--offset` from `pagination.next_offset`), `ricardo selling drafts --json`, and
+`ricardo selling status --json` (listing limit, `orders_pending_action`, unread
+count; three paced requests, 16 seconds or more). Bare `ricardo selling` still
+lists active offers. These need extension 0.3.0+; `extension_outdated` means
+reload it and Connect bridge. Check `capabilities` first and do not guess other
+seller commands.
+
+Read each order's own success-fee rate and amounts; they differ per order.
+`payout_unlocked_at` is a release by Ricardo, not a bank deposit, and
+`parcel_pickup` is a booking, not proof of handover. Buyer identity, addresses,
+payment references and pickup addresses are omitted by design; send the user to
+the order in Ricardo for those, and keep order data out of commits and shared
+logs. Draft item fields are unverified: read the returned objects. Replying to
+messages, listing, editing and publishing stay in the user's browser.
 
 ## Automation
 

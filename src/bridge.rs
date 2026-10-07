@@ -49,9 +49,24 @@ fn line(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
         .map_err(|e| format!("Invalid bridge JSON: {e}"))
 }
 pub fn request(data_dir: &Path, request: Value, timeout: Duration) -> Result<Value, String> {
+    // --timeout bounds the browser request itself; the broker may first wait
+    // out the pacing gap, so that wait is added rather than charged to it.
+    request_with_grace(
+        data_dir,
+        request,
+        timeout,
+        Duration::from_millis(crate::pacing::GAP_MS + 1_000),
+    )
+}
+fn request_with_grace(
+    data_dir: &Path,
+    request: Value,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<Value, String> {
     let mut socket = UnixStream::connect(data_dir.join("bridge.sock")).map_err(|_| "Browser bridge unavailable. Run `ricardo bridge serve` with an agent worker or connect the browser extension.".to_string())?;
     socket
-        .set_read_timeout(Some(timeout))
+        .set_read_timeout(Some(timeout + grace))
         .map_err(|e| e.to_string())?;
     socket
         .set_write_timeout(Some(timeout))
@@ -64,7 +79,18 @@ pub fn request(data_dir: &Path, request: Value, timeout: Duration) -> Result<Val
         .write_all(&bytes)
         .and_then(|_| socket.write_all(b"\n"))
         .map_err(|e| e.to_string())?;
-    let response = line(&mut BufReader::new(socket))?.ok_or("Bridge closed without a response")?;
+    let response = line(&mut BufReader::new(socket))
+        .map_err(|e| {
+            if e.contains("os error 11") || e.contains("timed out") {
+                format!(
+                    "bridge_timeout: no browser response within {}s plus the pacing gap",
+                    timeout.as_secs()
+                )
+            } else {
+                e
+            }
+        })?
+        .ok_or("Bridge closed without a response")?;
     if let Some(error) = response.get("error") {
         return Err(error.to_string());
     }
@@ -487,11 +513,18 @@ mod tests {
         let listener = UnixListener::bind(dir.path().join("bridge.sock")).unwrap();
         let worker = thread::spawn(move || {
             let (_stream, _) = listener.accept().unwrap();
-            thread::sleep(Duration::from_millis(150));
+            thread::sleep(Duration::from_millis(400));
         });
         let start = std::time::Instant::now();
-        assert!(request(dir.path(), json!({"op":"ping"}), Duration::from_millis(20)).is_err());
-        assert!(start.elapsed() < Duration::from_secs(1));
+        let err = request_with_grace(
+            dir.path(),
+            json!({"op":"ping"}),
+            Duration::from_millis(20),
+            Duration::from_millis(30),
+        )
+        .unwrap_err();
+        assert!(err.starts_with("bridge_timeout"), "{err}");
+        assert!(start.elapsed() < Duration::from_millis(350));
         worker.join().unwrap();
     }
 }

@@ -6,8 +6,9 @@ plain URLs, separate bid and buy-now prices, status evidence, and timestamps.
 Every returned search candidate is checked against its own article page.
 
 This is an initial interface client, not a full transactional Ricardo API. It
-exposes read operations and favorite changes; bidding, buying, payments, seller
-messages, and listing publication are not implemented.
+exposes read operations (including your sold orders, drafts and seller counts)
+and favorite changes; bidding, buying, payments, seller messages, and listing
+drafting or publication are not implemented.
 
 ## Build
 
@@ -94,6 +95,9 @@ ricardo account --json
 ricardo favorites list --offset 0 --limit 50 --json
 ricardo buying --offset 0 --limit 30 --json
 ricardo selling --json
+ricardo selling sold --limit 30 --json
+ricardo selling drafts --json
+ricardo selling status --json
 ricardo notifications --json
 ricardo favorites add ARTICLE_ID --json
 ricardo favorites add ARTICLE_ID --yes --json
@@ -108,9 +112,29 @@ inside the CLI envelope. Favorites and buying support `--offset` and `--limit`
 (defaults and maximums: 50 favorites, 30 buying offers). Their `pagination`
 metadata includes `offset`, `limit`, `total`, `partial`, and `next_offset`.
 Continue with `--offset NEXT_OFFSET` when it is non-null. Buying returns offers,
-not completed orders; selling returns active offers only.
+not completed orders; bare `selling` returns active offers only.
 `page URL` offers a server-rendered snapshot of known Ricardo read routes, not
 arbitrary browser control or a complete client-rendered page.
+
+## Seller views
+
+Extension 0.3.0 adds read-only seller views (reload the unpacked extension and
+connect the bridge again after updating):
+
+- `ricardo selling sold [--offset N] [--limit N]` lists sold orders (limit 1-30,
+  default 30) with CHF amounts, the per-order success fee and rate, payment,
+  delivery, tracking and ratings, plus Ricardo's own status buckets.
+- `ricardo selling drafts` reads the drafts tab. No draft items had been observed
+  when this was written, so the item shape is reported as unverified.
+- `ricardo selling status` reads the listing limit, whether orders await action
+  and the unread-message count. It makes three paced requests (about 16 seconds
+  or more) and never reads message contents.
+
+Buyer names, contact details, addresses, payment references and pickup addresses
+are omitted by design; the output is built from an allow-list, and sold orders
+are not saved to local history. Order IDs, amounts and tracking numbers are still
+private. Creating, editing and publishing listings stays in the browser. The
+observed routes are recorded in [docs/seller-routes.md](docs/seller-routes.md).
 
 ## Agent contract and local history
 
@@ -146,7 +170,7 @@ hidden `bridge native` command with length-prefixed Chrome messages.
 
 ```bash
 cargo test --locked
-node --test tests/extension.test.mjs
+node --test tests/
 ```
 
 Fixture and protocol tests validate parsing and error behavior. They do not
@@ -183,5 +207,6 @@ Open the returned `images[].path` files to inspect hours, accessories and condit
 Each run creates numbered files and a manifest in its own private directory.
 Photos are fetched sequentially through the shared eight-second pacing gate.
 Reload the unpacked extension after updating and reconnect it. Version 0.2.0
-adds only Tutti and the Ricardo/Tutti image CDNs to the host permissions.
+adds only Tutti and the Ricardo/Tutti image CDNs to the host permissions;
+version 0.3.0 adds the seller views and no new permissions.
 See [the agent contract](docs/agent-contract.md) for limits and freshness semantics.

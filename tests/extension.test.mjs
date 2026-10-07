@@ -132,3 +132,91 @@ test('image stream is cancelled at the byte cap and HTML is rejected',async()=>{
     await assert.rejects(handleRequest({op:'image',url}),/content type/);
   } finally {globalThis.fetch=saved;}
 });
+
+const ORDERS_URL = 'https://www.ricardo.ch/api/orders-spa/buying-selling/search';
+test('seller orders is one fixed POST search; paging is validated and nothing else is accepted', async () => {
+  let called; let queries = 0;
+  const chrome = {tabs:{query:async arg=>{queries++;assert.deepEqual(arg,{url:'https://www.ricardo.ch/*'});return [{id:21,active:true}]}},scripting:{executeScript:async args=>{called=args;return [{result:{status:200,body:'{}'}}]}}};
+  await handleRequest({op:'orders',role:'seller',offset:0,limit:30},chrome);
+  assert.equal(called.world,'MAIN');
+  assert.equal(called.target.tabId,21);
+  assert.deepEqual(called.args,[ORDERS_URL,'POST','{"params":{"isSeller":true,"offset":0,"limit":30}}']);
+  await handleRequest({op:'orders',role:'seller',offset:10000,limit:1},chrome);
+  assert.deepEqual(called.args,[ORDERS_URL,'POST','{"params":{"isSeller":true,"offset":10000,"limit":1}}']);
+  const before = queries;
+  const ok = {op:'orders',role:'seller',offset:0,limit:30};
+  for (const request of [
+    {...ok,path:'/api/bids'}, {...ok,method:'DELETE'}, {...ok,body:'{}'}, {...ok,params:{isSeller:false}},
+    {...ok,role:'buyer'}, {...ok,role:'Seller'}, {...ok,role:undefined}, {...ok,role:['seller']},
+    {...ok,limit:0}, {...ok,limit:31}, {...ok,limit:-5}, {...ok,limit:2.5}, {...ok,limit:'5'}, {...ok,limit:null}, {...ok,limit:undefined},
+    {...ok,offset:-1}, {...ok,offset:10001}, {...ok,offset:1.5}, {...ok,offset:'5'}, {...ok,offset:Number.NaN}, {...ok,offset:Infinity}, {...ok,offset:undefined}
+  ]) await assert.rejects(handleRequest(request,chrome), undefined, JSON.stringify(request));
+  await assert.rejects(handleRequest({...ok,path:'/x'},chrome),/unsupported fields/);
+  await assert.rejects(handleRequest({...ok,role:'buyer'},chrome),/seller/);
+  assert.equal(queries,before,'rejected requests must not touch the browser');
+  await assert.rejects(handleRequest(ok,{tabs:{query:async()=>[]}}),/Open Ricardo/);
+});
+test('seller orders request in the page keeps credentials, rejects redirects, makes one attempt and caps the body', async () => {
+  let script;
+  const chrome = {tabs:{query:async()=>[{id:21}]},scripting:{executeScript:async args=>{script=args;return [{result:{status:200,body:'{}'}}]}}};
+  await handleRequest({op:'orders',role:'seller',offset:30,limit:30},chrome);
+  const savedFetch=globalThis.fetch; const savedLocation=globalThis.location; const savedTimeout=AbortSignal.timeout;
+  let calls=0;
+  try {
+    AbortSignal.timeout=ms=>{assert.equal(ms,30000);return savedTimeout(ms)};
+    globalThis.location={origin:'https://www.ricardo.ch'};
+    globalThis.fetch=async (url,options)=>{
+      calls++;
+      assert.equal(url,ORDERS_URL);
+      assert.equal(options.method,'POST');
+      assert.equal(options.credentials,'include');
+      assert.equal(options.cache,'no-store');
+      assert.equal(options.redirect,'error');
+      assert.deepEqual(options.headers,{'Content-Type':'application/json'});
+      assert.equal(options.body,'{"params":{"isSeller":true,"offset":30,"limit":30}}');
+      assert.ok(options.signal instanceof AbortSignal);
+      return new Response('{"orders":[],"totalCount":0}',{status:200,headers:{'content-type':'application/json'}});
+    };
+    const result=await script.func(...script.args);
+    assert.equal(result.status,200);
+    assert.equal(result.content_type,'application/json');
+    assert.equal(result.body,'{"orders":[],"totalCount":0}');
+    assert.ok(!Number.isNaN(Date.parse(result.checked_at)));
+    assert.equal(calls,1);
+    globalThis.fetch=async()=>{calls++;throw new Error('network interrupted')};
+    await assert.rejects(script.func(...script.args),/network interrupted/);
+    assert.equal(calls,2,'no retry after a failure');
+    globalThis.fetch=async()=>{calls++;return new Response(new Uint8Array(4*1024*1024+1),{status:200})};
+    await assert.rejects(script.func(...script.args),/4 MiB/);
+    globalThis.location={origin:'https://evil.test'};
+    await assert.rejects(script.func(...script.args),/changed origin/);
+  } finally {globalThis.fetch=savedFetch;globalThis.location=savedLocation;AbortSignal.timeout=savedTimeout;}
+});
+test('seller GET routes are allowlisted exactly and the orders POST route is not reachable as a fetch', async () => {
+  for (const path of ['/de/my-ricardo/selling/drafts/','/api/orders-spa/selling/selling-limits','/api/orders-spa/selling/has-orders-pending-actions','/api/frontend/messaging/unreads']) {
+    assert.equal(validatePath(path).origin,'https://www.ricardo.ch');
+    assert.equal(validatePath(path).pathname,path);
+  }
+  for (const path of ['/api/orders-spa/buying-selling/search','/de/my-ricardo/selling/orders/','/de/my-ricardo/selling/','/api/orders-spa/selling/','/api/orders-spa/selling/selling-limits/x','/api/orders-spa/selling/selling-limits/../x','/api/frontend/messaging/','/api/frontend/messaging/unreads/1','/api/frontend/users/1/has-payout-problems','/api/frontend/money-guard/user-status','/api/frontend/user-tasks']) {
+    assert.throws(()=>validatePath(path),/approved read endpoint|Invalid/,path);
+  }
+  let called;
+  const chrome = {tabs:{query:async()=>[{id:5}]},scripting:{executeScript:async args=>{called=args;return [{result:{status:200,body:'true'}}]}}};
+  await handleRequest({op:'fetch',path:'/api/orders-spa/selling/has-orders-pending-actions'},chrome);
+  assert.deepEqual(called.args,['https://www.ricardo.ch/api/orders-spa/selling/has-orders-pending-actions','GET',null]);
+  await handleRequest({op:'fetch',path:'/de/my-ricardo/selling/drafts/'},chrome);
+  assert.deepEqual(called.args,['https://www.ricardo.ch/de/my-ricardo/selling/drafts/','GET',null]);
+  called = undefined;
+  await assert.rejects(handleRequest({op:'fetch',path:'/api/orders-spa/buying-selling/search'},chrome),/approved read endpoint/);
+  await assert.rejects(handleRequest({op:'orders_search',role:'seller',offset:0,limit:1},chrome),/Unsupported browser operation/);
+  assert.equal(called,undefined);
+});
+
+test('validatePath agrees with the shared CLI route corpus', async () => {
+  const corpus = JSON.parse(await readFile(new URL('./fixtures/route-corpus.json', import.meta.url), 'utf8'));
+  for (const {path, allowed} of corpus.cases) {
+    let ok = true;
+    try { validatePath(path); } catch { ok = false; }
+    assert.equal(ok, allowed, path);
+  }
+});

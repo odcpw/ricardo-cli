@@ -9,7 +9,7 @@ use std::path::PathBuf;
     arg_required_else_help = true
 )]
 #[command(
-    after_help = "Start: ricardo doctor --json\nAgent guide: ricardo robot-docs guide\nSearch: ricardo search Bambu P2S --max-price 350 --json"
+    after_help = "Start: ricardo doctor --json\nAgent guide: ricardo robot-docs guide\nSearch: ricardo search Bambu P2S --max-price 350 --json\nSeller: ricardo selling sold --json (read-only; also: selling drafts, selling status)"
 )]
 pub struct Cli {
     /// Emit one versioned JSON envelope; diagnostics never pollute stdout.
@@ -18,7 +18,7 @@ pub struct Cli {
     /// Disable ANSI styling (output is already plain by default).
     #[arg(long, global = true)]
     pub no_color: bool,
-    /// Maximum browser request duration in seconds.
+    /// Maximum duration of each browser request in seconds (pacing waits are added).
     #[arg(long, global = true, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=300))]
     pub timeout: u64,
     /// Override the private local state directory.
@@ -56,8 +56,14 @@ pub enum Command {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=30))]
         limit: u32,
     },
-    /// Read your active selling offers.
-    Selling,
+    /// Read selling offers, sold orders, drafts and seller counts (all read-only).
+    #[command(
+        after_help = "Bare `ricardo selling` reads active offers. Subcommands need extension 0.3.0+.\nExamples:\n  ricardo selling --json\n  ricardo selling sold --limit 30 --json\n  ricardo selling drafts --json\n  ricardo selling status --json\nNothing here lists, edits, publishes, messages or pays; do those in Ricardo."
+    )]
+    Selling {
+        #[command(subcommand)]
+        command: Option<SellingCommand>,
+    },
     /// Read account notifications.
     Notifications,
     /// Fetch a read-only Ricardo interface snapshot for a URL.
@@ -198,6 +204,32 @@ pub enum FavoritesCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum SellingCommand {
+    /// Read sold orders: CHF amounts, fees, payment, delivery and ratings.
+    #[command(
+        after_help = "Buyer names, contact details, addresses and payment references are omitted by design.\nFollow pagination.next_offset for the next page. Not recorded in local history.\nNeeds extension 0.3.0+ (extension_outdated means reload it and Connect bridge).\nExample: ricardo selling sold --offset 0 --limit 30 --json"
+    )]
+    Sold {
+        /// Orders to skip (0-10000); use pagination.next_offset from the previous page.
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=10000))]
+        offset: u32,
+        /// Orders to request (1-30).
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=30))]
+        limit: u32,
+    },
+    /// Read saved listing drafts from the drafts tab (item shape not yet observed).
+    #[command(
+        after_help = "Needs extension 0.3.0+. Draft items had not been observed, so read the returned objects.\nExample: ricardo selling drafts --json"
+    )]
+    Drafts,
+    /// Read the listing limit, orders-awaiting-action flag and unread-message count.
+    #[command(
+        after_help = "Makes three paced requests, so expect 16 seconds or more. Counts only: message contents are not read.\nNeeds extension 0.3.0+.\nExample: ricardo selling status --json"
+    )]
+    Status,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RobotDocsCommand {
     Guide,
 }
@@ -303,6 +335,47 @@ mod tests {
                 command: BridgeCommand::Native
             }
         ));
+    }
+
+    #[test]
+    fn bare_selling_keeps_reading_active_offers() {
+        let cli = Cli::try_parse_from(["ricardo", "selling", "--json"]).unwrap();
+        assert!(cli.json);
+        assert!(matches!(cli.command, Command::Selling { command: None }));
+    }
+
+    #[test]
+    fn selling_subcommands_parse_with_defaults_and_bounds() {
+        let sold = |args: &[&str]| {
+            let mut full = vec!["ricardo", "selling", "sold"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full)
+        };
+        assert!(matches!(
+            sold(&[]).unwrap().command,
+            Command::Selling {
+                command: Some(SellingCommand::Sold {
+                    offset: 0,
+                    limit: 30
+                })
+            }
+        ));
+        assert!(sold(&["--offset", "10000", "--limit", "1"]).is_ok());
+        for bad in [
+            ["--limit", "0"],
+            ["--limit", "31"],
+            ["--offset", "10001"],
+            ["--offset", "-1"],
+            ["--limit", "2.5"],
+        ] {
+            assert!(sold(&bad).is_err(), "{bad:?}");
+        }
+        for (word, ok) in [("drafts", true), ("status", true), ("orders", false)] {
+            assert_eq!(
+                Cli::try_parse_from(["ricardo", "selling", word]).is_ok(),
+                ok
+            );
+        }
     }
 
     #[test]

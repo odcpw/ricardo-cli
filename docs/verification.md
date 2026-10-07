@@ -115,3 +115,30 @@ The optimized release was built and installed. Its final live inspection could
 not run because the browser bridge had disconnected (`bridge_unavailable`,
 exit 3). Earlier live page reads verified the source shape; the installed
 parser's live end-to-end verification remains pending reconnection.
+
+## 2026-10-07: Seller views and the Ricardo selling skill
+
+Seller routes were observed in the signed-in web interface without submitting,
+saving or changing anything (see `docs/seller-routes.md`); the drafts count was
+confirmed unchanged afterwards. Added `selling sold`, `selling drafts` and
+`selling status` (extension 0.3.0: one fixed read-only orders search plus four
+GET routes). Sold orders are projected from an allow-list; buyer identity,
+addresses, payment references, courier notes and objects with unobserved inner
+shapes are omitted or reduced to presence flags. The CLI and extension route
+allowlists are checked against one shared corpus in both test suites.
+`--timeout` now excludes the pacing wait, and an unanswered browser yields
+`bridge_timeout`.
+
+Validation: 65 Rust unit tests and 15 process-contract tests passed (80 total),
+14 Node extension tests passed, Clippy passed with warnings denied, rustfmt
+clean. A four-dimension review with adversarial verification confirmed 12 of 37
+findings; all 12 were fixed. The new `skills/sell-my-stuff-on-ricardo` package
+passed its own suite (144 checks across five scripts, plus link, frontmatter,
+executable-bit and capability cross-checks). Release built and installed at
+`/home/oliver/.local/bin/ricardo`.
+
+Not yet exercised: the new commands through a live logged-in bridge. The
+browser's loaded extension must be reloaded to 0.3.0 and reconnected first.
+The unit assumptions to confirm live are `logistic.pickup.price` in cents and
+`logistic.pickup.weight` in grams. Draft item and closed-offer item shapes
+remain unobserved because the account had none.
