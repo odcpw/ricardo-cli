@@ -2,6 +2,8 @@
 
 The CLI reads Ricardo and Tutti through the seller's signed-in browser. It is an **observation instrument**: it cannot create drafts, publish, revise, answer questions, message anyone, accept offers or touch payments. The agent fills the listing form in the seller's browser, saves a draft, has the seller review it, and publishes only under explicit authority. Authoritative contract: this repository's `docs/agent-contract.md` (live-observed seller routes: `docs/seller-routes.md`); installed surface: `ricardo capabilities --json`.
 
+**If `ricardo` is not installed or cannot run** (it currently requires Linux), skip this file: read the same pages in the seller's browser under the same evidence rules, and do not try to install the CLI for the seller.
+
 **Check `ricardo capabilities --json` first and use only what it lists.** The read-only seller commands `ricardo selling sold`, `ricardo selling drafts` and `ricardo selling status` exist in CLI versions that list them (marked *if listed* below); prefer them when listed, otherwise read the same pages in the seller's browser (My Ricardo, Mein Verkaufen). They need the browser extension at the version the contract names (0.3.0 at the time of writing); an outdated extension fails with `extension_outdated` (exit 7) and a reload hint, never with partial data. Further seller commands (for example unsold items) may appear in newer versions: prefer them when listed, never guess them. Guessed top-level names such as orders, sold or drafts exit 2 with a hint naming the correct `selling` subcommand.
 
 ## Rules for every call
